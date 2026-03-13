@@ -1,0 +1,633 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HVDC Backlog Upload</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5efe4;
+      --panel: #fffdf8;
+      --panel-strong: #f0e4d1;
+      --ink: #1e2a2a;
+      --muted: #5b6760;
+      --line: #cbbda6;
+      --accent: #0d6b62;
+      --accent-strong: #084c46;
+      --danger: #9f2d2d;
+      --warn: #9b6500;
+      --ok: #1f6a37;
+      --shadow: 0 16px 36px rgba(30, 42, 42, 0.12);
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top right, rgba(13, 107, 98, 0.10), transparent 38%),
+        linear-gradient(180deg, #f7f1e6 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+
+    .shell {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 20px 18px 28px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, rgba(13, 107, 98, 0.96), rgba(8, 76, 70, 0.98));
+      color: #eff9f6;
+      border-radius: 24px;
+      padding: 22px 22px 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      opacity: 0.82;
+    }
+
+    h1 {
+      margin: 10px 0 8px;
+      font-size: 28px;
+      line-height: 1.08;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 680px;
+      color: rgba(239, 249, 246, 0.92);
+      line-height: 1.5;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.3fr 0.9fr;
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid rgba(203, 189, 166, 0.88);
+      border-radius: 22px;
+      padding: 18px;
+      box-shadow: 0 10px 24px rgba(30, 42, 42, 0.08);
+    }
+
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 17px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    input[type="text"],
+    textarea,
+    input[type="file"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: #fffefb;
+      color: var(--ink);
+      font: inherit;
+    }
+
+    textarea {
+      min-height: 132px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+
+    .hint {
+      margin: 6px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 120ms ease, background 120ms ease, opacity 120ms ease;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: white;
+    }
+
+    button.secondary {
+      background: var(--panel-strong);
+      color: var(--ink);
+    }
+
+    button:hover:enabled {
+      transform: translateY(-1px);
+    }
+
+    button:disabled {
+      opacity: 0.56;
+      cursor: wait;
+    }
+
+    .status {
+      min-height: 42px;
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: #f6f1e8;
+      border: 1px dashed var(--line);
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .status.error {
+      background: rgba(159, 45, 45, 0.08);
+      border-color: rgba(159, 45, 45, 0.32);
+      color: var(--danger);
+    }
+
+    .status.success {
+      background: rgba(31, 106, 55, 0.08);
+      border-color: rgba(31, 106, 55, 0.30);
+      color: var(--ok);
+    }
+
+    .status.warning {
+      background: rgba(155, 101, 0, 0.08);
+      border-color: rgba(155, 101, 0, 0.30);
+      color: var(--warn);
+    }
+
+    .facts {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      margin-top: 14px;
+    }
+
+    .fact {
+      background: #fcf8f0;
+      border: 1px solid rgba(203, 189, 166, 0.74);
+      border-radius: 16px;
+      padding: 12px;
+    }
+
+    .fact .label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .fact .value {
+      margin-top: 6px;
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .report {
+      margin-top: 14px;
+      white-space: pre-wrap;
+      background: #fffdf9;
+      border: 1px solid rgba(203, 189, 166, 0.74);
+      border-radius: 16px;
+      padding: 14px;
+      line-height: 1.5;
+      max-height: 420px;
+      overflow: auto;
+    }
+
+    .meta {
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    code {
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 0.95em;
+    }
+
+    @media (max-width: 760px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .shell {
+        padding: 14px 12px 20px;
+      }
+
+      h1 {
+        font-size: 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="eyebrow">HVDC Operations</div>
+      <h1>Upload backlog evidence and run the MCP analysis directly.</h1>
+      <p>
+        This widget uploads a CSV or XLSX file inside ChatGPT, requests a temporary
+        HTTP download URL, and calls <code>hvdc_analyze_backlog_batch</code> without
+        relying on sandbox file paths.
+      </p>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>Analysis input</h2>
+        <div class="stack">
+          <div>
+            <label for="file-input">Shipment file</label>
+            <input id="file-input" type="file" accept=".csv,.xlsx">
+            <p class="hint">Accepted formats: <code>.csv</code>, <code>.xlsx</code></p>
+          </div>
+
+          <div>
+            <label for="snapshot-name">Snapshot name</label>
+            <input id="snapshot-name" type="text" placeholder="backlog-20260313-013000">
+            <p class="hint">Reusing a name overwrites the existing snapshot.</p>
+          </div>
+
+          <div>
+            <label for="sheet-name">Worksheet name</label>
+            <input id="sheet-name" type="text" placeholder="Optional for XLSX">
+          </div>
+
+          <div>
+            <label for="column-map">Column map JSON</label>
+            <textarea id="column-map" placeholder="{&#10;  &quot;destination&quot;: &quot;Site&quot;,&#10;  &quot;status&quot;: &quot;Open Status&quot;&#10;}"></textarea>
+            <p class="hint">
+              Optional override only when your headers do not match the built-in semantic aliases.
+            </p>
+          </div>
+
+          <div class="actions">
+            <button id="analyze-button" class="primary" type="button">Analyze backlog</button>
+            <button id="summary-button" class="secondary" type="button" disabled>Send summary to chat</button>
+          </div>
+
+          <div id="status" class="status">Waiting for a file.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Expected checks</h2>
+        <div class="stack">
+          <div class="fact">
+            <div class="label">Flow rules</div>
+            <div class="meta">AGI and DAS are auto-upgraded to Flow Code 3 when MOSB is required.</div>
+          </div>
+          <div class="fact">
+            <div class="label">ZERO gates</div>
+            <div class="meta">DOT, FANR, ECAS, CICPA, FRA, eBL, BOE, weather, and MOSB capacity are evaluated when data exists.</div>
+          </div>
+          <div class="fact">
+            <div class="label">Output</div>
+            <div class="meta">The analysis tool persists a named snapshot so later comparisons can use <code>hvdc_compare_snapshots</code>.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top: 18px;">
+      <h2>Analysis result</h2>
+      <div id="facts" class="facts"></div>
+      <div id="report" class="report">No result yet.</div>
+      <div id="meta" class="meta"></div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const bridge = window.openai;
+      const fileInput = document.getElementById("file-input");
+      const snapshotInput = document.getElementById("snapshot-name");
+      const sheetInput = document.getElementById("sheet-name");
+      const columnMapInput = document.getElementById("column-map");
+      const analyzeButton = document.getElementById("analyze-button");
+      const summaryButton = document.getElementById("summary-button");
+      const statusBox = document.getElementById("status");
+      const factsBox = document.getElementById("facts");
+      const reportBox = document.getElementById("report");
+      const metaBox = document.getElementById("meta");
+
+      let lastPayload = null;
+
+      function notifyHeight() {
+        if (bridge && typeof bridge.notifyIntrinsicHeight === "function") {
+          requestAnimationFrame(function () {
+            bridge.notifyIntrinsicHeight(document.documentElement.scrollHeight);
+          });
+        }
+      }
+
+      function setStatus(text, tone) {
+        statusBox.textContent = text;
+        statusBox.className = "status" + (tone ? " " + tone : "");
+        notifyHeight();
+      }
+
+      function setMeta(lines) {
+        metaBox.innerHTML = lines.join("<br>");
+        notifyHeight();
+      }
+
+      function parseColumnMap() {
+        const raw = columnMapInput.value.trim();
+        if (!raw) {
+          return {};
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (error) {
+          throw new Error("Column map must be valid JSON.");
+        }
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+          throw new Error("Column map JSON must be an object.");
+        }
+        return parsed;
+      }
+
+      function persistState(extra) {
+        if (!bridge || typeof bridge.setWidgetState !== "function") {
+          return;
+        }
+        const nextState = Object.assign(
+          {
+            snapshotName: snapshotInput.value,
+            sheetName: sheetInput.value,
+            columnMapText: columnMapInput.value,
+          },
+          extra || {}
+        );
+        bridge.setWidgetState(nextState);
+      }
+
+      function readDefaults() {
+        const toolInput = bridge && bridge.toolInput ? bridge.toolInput : {};
+        const rawParams = toolInput && toolInput.params ? toolInput.params : toolInput;
+        const toolOutput = bridge && bridge.toolOutput ? bridge.toolOutput : {};
+        const defaults = toolOutput && toolOutput.defaults ? toolOutput.defaults : {};
+        const state = bridge && bridge.widgetState ? bridge.widgetState : {};
+        return {
+          snapshotName: state.snapshotName || defaults.snapshot_name || rawParams.snapshot_name || "",
+          sheetName: state.sheetName || defaults.sheet_name || rawParams.sheet_name || "",
+          columnMapText:
+            state.columnMapText ||
+            (defaults.column_map && Object.keys(defaults.column_map).length
+              ? JSON.stringify(defaults.column_map, null, 2)
+              : rawParams.column_map
+                ? JSON.stringify(rawParams.column_map, null, 2)
+                : ""),
+          resultText: state.resultText || "",
+          metaLines: state.metaLines || [],
+          facts: state.facts || [],
+        };
+      }
+
+      function renderFacts(payload) {
+        const totals = payload && payload.totals ? payload.totals : {};
+        const facts = [
+          { label: "Rows", value: totals.total_rows || 0 },
+          { label: "Zero", value: totals.zero_rows || 0 },
+          { label: "Warning", value: totals.warning_rows || 0 },
+          { label: "Normal", value: totals.normal_rows || 0 },
+        ];
+        factsBox.innerHTML = facts.map(function (fact) {
+          return (
+            '<div class="fact">' +
+            '<div class="label">' + fact.label + '</div>' +
+            '<div class="value">' + fact.value + '</div>' +
+            "</div>"
+          );
+        }).join("");
+        return facts;
+      }
+
+      function extractText(result) {
+        if (!result) {
+          return "No result returned.";
+        }
+        if (result.structuredContent && result.structuredContent.markdown_report) {
+          return result.structuredContent.markdown_report;
+        }
+        if (result.markdown_report) {
+          return result.markdown_report;
+        }
+        if (Array.isArray(result.content)) {
+          const firstText = result.content.find(function (item) {
+            return item && item.type === "text" && item.text;
+          });
+          if (firstText) {
+            return firstText.text;
+          }
+        }
+        return JSON.stringify(result, null, 2);
+      }
+
+      async function analyze() {
+        if (!bridge || typeof bridge.uploadFile !== "function") {
+          setStatus(
+            "This widget only works inside ChatGPT Apps. Open it from the ChatGPT connector and upload the file there.",
+            "warning"
+          );
+          return;
+        }
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) {
+          setStatus("Choose a CSV or XLSX file first.", "warning");
+          return;
+        }
+
+        let columnMap;
+        try {
+          columnMap = parseColumnMap();
+        } catch (error) {
+          setStatus(error.message, "error");
+          return;
+        }
+
+        analyzeButton.disabled = true;
+        summaryButton.disabled = true;
+        setStatus("Uploading file and requesting temporary download URL...", "");
+
+        try {
+          const uploadResult = await bridge.uploadFile(file);
+          const fileId =
+            typeof uploadResult === "string"
+              ? uploadResult
+              : uploadResult && (uploadResult.fileId || uploadResult.file_id || uploadResult.id);
+          if (!fileId) {
+            throw new Error("ChatGPT did not return a file id.");
+          }
+
+          const downloadResult = await bridge.getFileDownloadUrl({ fileId: fileId });
+          const downloadUrl =
+            typeof downloadResult === "string"
+              ? downloadResult
+              : downloadResult && (downloadResult.downloadUrl || downloadResult.download_url || downloadResult.url);
+          if (!downloadUrl || !/^https?:\/\//i.test(downloadUrl)) {
+            throw new Error("ChatGPT did not provide a temporary HTTP download URL.");
+          }
+
+          setStatus("Running hvdc_analyze_backlog_batch...", "");
+          const args = {
+            file: {
+              file_id: fileId,
+              download_url: downloadUrl,
+            },
+          };
+          if (snapshotInput.value.trim()) {
+            args.snapshot_name = snapshotInput.value.trim();
+          }
+          if (sheetInput.value.trim()) {
+            args.sheet_name = sheetInput.value.trim();
+          }
+          if (Object.keys(columnMap).length) {
+            args.column_map = columnMap;
+          }
+
+          const result = await bridge.callTool("hvdc_analyze_backlog_batch", { params: args });
+          const payload = result && result.structuredContent ? result.structuredContent : result;
+          lastPayload = payload;
+          const reportText = extractText(result);
+          const facts = renderFacts(payload || {});
+          reportBox.textContent = reportText;
+          const metaLines = [
+            "Snapshot: " + ((payload && payload.snapshot_name) || args.snapshot_name || "auto-generated"),
+            "Source: " + ((payload && payload.source && payload.source.display_name) || file.name),
+            "Download URL: temporary ChatGPT file URL issued successfully.",
+          ];
+          setMeta(metaLines);
+          persistState({
+            resultText: reportText,
+            metaLines: metaLines,
+            facts: facts,
+          });
+          setStatus("Backlog analysis completed.", "success");
+          summaryButton.disabled = false;
+        } catch (error) {
+          lastPayload = null;
+          reportBox.textContent = "";
+          factsBox.innerHTML = "";
+          setMeta([]);
+          setStatus(error && error.message ? error.message : "Backlog analysis failed.", "error");
+          persistState({
+            resultText: "",
+            metaLines: [],
+            facts: [],
+          });
+        } finally {
+          analyzeButton.disabled = false;
+          notifyHeight();
+        }
+      }
+
+      async function sendSummary() {
+        if (!bridge || typeof bridge.sendFollowUpMessage !== "function" || !lastPayload) {
+          return;
+        }
+        const snapshotName = lastPayload.snapshot_name || snapshotInput.value.trim() || "latest snapshot";
+        const prompt =
+          "Summarize the backlog analysis for snapshot " +
+          snapshotName +
+          ". Focus on ZERO candidates, hotspots by site and mode, and immediate actions.";
+        summaryButton.disabled = true;
+        try {
+          await bridge.sendFollowUpMessage({ prompt: prompt, scrollToBottom: true });
+          setStatus("Summary request sent to ChatGPT.", "success");
+        } catch (error) {
+          setStatus(error && error.message ? error.message : "Failed to send summary request.", "error");
+        } finally {
+          summaryButton.disabled = false;
+        }
+      }
+
+      const defaults = readDefaults();
+      snapshotInput.value = defaults.snapshotName;
+      sheetInput.value = defaults.sheetName;
+      columnMapInput.value = defaults.columnMapText;
+      if (defaults.resultText) {
+        reportBox.textContent = defaults.resultText;
+      }
+      if (defaults.metaLines && defaults.metaLines.length) {
+        setMeta(defaults.metaLines);
+      } else {
+        setMeta([
+          "Use this widget when a remote MCP server cannot read ChatGPT sandbox file paths directly.",
+          "The widget converts your upload into a temporary HTTP download URL before calling the analysis tool.",
+        ]);
+      }
+      if (defaults.facts && defaults.facts.length) {
+        factsBox.innerHTML = defaults.facts.map(function (fact) {
+          return (
+            '<div class="fact">' +
+            '<div class="label">' + fact.label + '</div>' +
+            '<div class="value">' + fact.value + '</div>' +
+            "</div>"
+          );
+        }).join("");
+      }
+      if (!bridge || typeof bridge.uploadFile !== "function") {
+        setStatus(
+          "ChatGPT widget APIs are unavailable in this viewer. Open the widget inside ChatGPT to upload a file.",
+          "warning"
+        );
+      }
+
+      fileInput.addEventListener("change", function () {
+        const file = fileInput.files && fileInput.files[0];
+        setStatus(file ? ("Selected file: " + file.name) : "Waiting for a file.", "");
+      });
+      snapshotInput.addEventListener("input", function () { persistState(); });
+      sheetInput.addEventListener("input", function () { persistState(); });
+      columnMapInput.addEventListener("input", function () { persistState(); });
+      analyzeButton.addEventListener("click", analyze);
+      summaryButton.addEventListener("click", sendSummary);
+      notifyHeight();
+    })();
+  </script>
+</body>
+</html>

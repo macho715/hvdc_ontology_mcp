@@ -1,0 +1,7 @@
+Shipment ID,Final Location,Open Status,Mode,Gross Weight Tons,Port Date,MOSB Date,Site Date,eBL Match,BOE Complete,FANR Ready,ECAS Ready,CICPA Ready,FRA Ready,DOT Ready,Weather Alert,MOSB Utilization Pct,Warehouse 1 Date
+AGI-001,AGI,In transit,C,45,2026-03-01,2026-03-07,,TRUE,TRUE,,,TRUE,TRUE,,FALSE,76,
+DAS-001,DAS,Delivered to site,B,20,2026-03-01,2026-03-03,2026-03-06,TRUE,TRUE,,TRUE,TRUE,TRUE,,FALSE,72,
+MIR-001,MIR,At WH pending site,A,120,2026-03-02,,,TRUE,TRUE,,,TRUE,,TRUE,FALSE,84,2026-03-04
+SHU-001,SHU,Delivered to site,B,85,2026-03-01,,2026-03-05,TRUE,TRUE,,,TRUE,,,FALSE,60,
+AGI-002,AGI,At WH pending site,C,25,2026-03-01,2026-03-06,,TRUE,FALSE,FALSE,TRUE,TRUE,FALSE,,TRUE,105,
+DAS-002,DAS,At WH pending site,C,30,2026-03-02,,,TRUE,TRUE,,TRUE,TRUE,FALSE,,FALSE,90,

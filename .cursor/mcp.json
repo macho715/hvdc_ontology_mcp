@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "hvdc-knowledge": {
+      "type": "stdio",
+      "command": "cmd.exe",
+      "args": [
+        "/d",
+        "/c",
+        "${workspaceFolder}${/}scripts${/}cursor_mcp.cmd"
+      ]
+    }
+  }
+}

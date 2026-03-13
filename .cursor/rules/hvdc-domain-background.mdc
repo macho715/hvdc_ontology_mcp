@@ -1,0 +1,30 @@
+---
+description: HVDC UAE logistics domain background and MCP usage rules for Cursor
+alwaysApply: true
+---
+
+- Treat this repository as Samsung C&T x ADNOC x DSV HVDC UAE logistics software.
+- Domain-critical rules must not be invented when the repo docs or MCP can verify them.
+- Core flow constraints:
+  - AGI and DAS are offshore destinations and require MOSB. Minimum Flow Code is 3.
+  - MIR and SHU are onshore heavy-cargo sites and require DOT approval for cargo above 90 tons.
+  - MOSB is the central hub and has a 20,000 sqm capacity limit.
+- ZERO gate blockers:
+  - eBL mismatch
+  - BOE field gaps
+  - missing FANR permit
+  - MOSB over capacity
+  - missing DOT permit for cargo above 90 tons
+  - weather alert
+- When editing or reviewing code related to shipment routing, backlog analysis, KPI checks, regulations, customs, or ZERO logic, use the `hvdc-knowledge` MCP server before changing behavior.
+- Prefer these MCP tools by intent:
+  - `hvdc_get_domain_summary` for fast domain refresh
+  - `hvdc_get_flow_code` and `hvdc_get_node_info` for routing and node rules
+  - `hvdc_get_kpi` and `hvdc_get_regulations` for policy thresholds
+  - `hvdc_analyze_shipment_case`, `hvdc_analyze_backlog_batch`, `hvdc_zero_gate_check`, and `hvdc_compare_snapshots` for operational reasoning
+- Prefer these source documents when MCP needs deeper evidence:
+  - `docs/Logi ontol core doc/CONSOLIDATED-01-core-framework-infra.md`
+  - `docs/Logi ontol core doc/CONSOLIDATED-02-warehouse-flow.md`
+  - `docs/Logi ontol core doc/CONSOLIDATED-09-operations.md`
+  - `docs/Logi ontol core doc/FLOW_CODE_V35_QUICK_REFERENCE.md`
+  - `AGENTS.md`

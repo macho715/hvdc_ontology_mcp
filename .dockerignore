@@ -1,0 +1,12 @@
+.git
+.gitignore
+.runtime
+.ruff_cache
+.claude
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+tests
+a.html

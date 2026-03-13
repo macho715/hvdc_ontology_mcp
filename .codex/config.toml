@@ -1,0 +1,12 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+
+# Project-scoped Codex MCP configuration.
+# Codex loads this file only when the project is trusted.
+# This allows other PCs to use the repo-local MCP setup without editing
+# %USERPROFILE%\.codex\config.toml first.
+
+[mcp_servers.hvdc-knowledge]
+command = "cmd.exe"
+args = ["/d", "/c", ".\\scripts\\cursor_mcp.cmd"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
