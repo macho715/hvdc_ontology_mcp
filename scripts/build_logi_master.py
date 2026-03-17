@@ -75,11 +75,15 @@ def _git_commit(paths: list[Path] | None = None) -> str:
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(_normalized_text(path).encode("utf-8")).hexdigest()
+
+
+def _normalized_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _line_count(path: Path) -> int:
-    return len(path.read_text(encoding="utf-8").splitlines())
+    return len(_normalized_text(path).splitlines())
 
 
 def _file_hash(paths: list[Path]) -> str:
@@ -87,7 +91,7 @@ def _file_hash(paths: list[Path]) -> str:
     for path in paths:
         digest.update(path.name.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(_normalized_text(path).encode("utf-8"))
         digest.update(b"\0")
     return digest.hexdigest()
 
