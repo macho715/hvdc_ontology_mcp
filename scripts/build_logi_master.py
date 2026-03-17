@@ -14,7 +14,7 @@ import hashlib
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -128,7 +128,7 @@ def _generated_at(input_paths: list[Path]) -> str:
         pass
 
     latest_mtime = max(path.stat().st_mtime for path in input_paths)
-    return datetime.fromtimestamp(latest_mtime, tz=UTC).isoformat()
+    return datetime.fromtimestamp(latest_mtime, tz=timezone.utc).isoformat()
 
 
 def _metadata_lines(input_paths: list[Path]) -> list[str]:

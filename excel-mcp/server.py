@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -35,7 +35,7 @@ _workbook_locks: dict[str, threading.Lock] = {}
 class JsonLineFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "ts": datetime.now(UTC).isoformat(),
+            "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -225,7 +225,7 @@ def _workbook_metadata(path: Path) -> dict[str, Any]:
         "path": str(path),
         "relative_path": _relative_path(path),
         "size_bytes": path.stat().st_size,
-        "modified_at": datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(),
+        "modified_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
         "sheet_count": len(wb.sheetnames),
         "sheets": sheet_rows,
     }
@@ -426,7 +426,7 @@ def list_workbooks() -> dict[str, Any]:
             {
                 "path": _relative_path(path),
                 "size_bytes": path.stat().st_size,
-                "modified_at": datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(),
+                "modified_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
             }
         )
     return {"ok": True, "root": str(ROOT), "count": len(files), "files": files}

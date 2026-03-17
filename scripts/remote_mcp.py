@@ -12,7 +12,7 @@ Usage:
 """
 
 import argparse
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -68,7 +68,7 @@ def fail(message: str) -> None:
 
 
 def utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def normalize_public_base_url(url: str | None) -> str:

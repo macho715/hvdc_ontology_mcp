@@ -16,7 +16,7 @@ import asyncio
 from collections import deque
 import contextlib
 import contextvars
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -76,7 +76,7 @@ _correlation_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 class JsonLineFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "ts": datetime.now(UTC).isoformat(),
+            "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -491,7 +491,7 @@ def _make_structured_tool_result(
 
 
 def _analysis_snapshot_name(prefix: str = "backlog") -> str:
-    return f"{prefix}-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
+    return f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
 
 
 def _allow_local_analysis_paths() -> bool:
@@ -533,7 +533,7 @@ def _build_excel_export_payload(
     return {
         "version": EXCEL_EXPORT_VERSION,
         "kind": kind,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "workbook_name": workbook_name,
         "sheets": normalized_sheets,
     }
@@ -1361,7 +1361,7 @@ def _read_json_file_safe(filepath: Path) -> dict:
 
 def _isoformat_file_mtime(filepath: Path) -> Optional[str]:
     with contextlib.suppress(OSError):
-        return datetime.fromtimestamp(filepath.stat().st_mtime, tz=UTC).isoformat()
+        return datetime.fromtimestamp(filepath.stat().st_mtime, tz=timezone.utc).isoformat()
     return None
 
 
@@ -1379,7 +1379,7 @@ def _seconds_since(value: object) -> Optional[int]:
     parsed = _parse_iso_datetime(value)
     if parsed is None:
         return None
-    return max(0, int((datetime.now(UTC) - parsed).total_seconds()))
+    return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
 
 
 def _pid_from_value(value: object) -> Optional[int]:
@@ -1905,7 +1905,7 @@ def _build_history_payload(
     runtime: dict[str, Any],
     recent_restarts: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     last_hour = []
     for entry in history:
         ts = _parse_iso_datetime(entry.get("ts"))
@@ -1948,7 +1948,7 @@ async def _build_dashboard_payload() -> dict:
     log_paths = _runtime_log_paths(state)
     started_at = state.get("started_at") if isinstance(state.get("started_at"), str) else None
     started_dt = _parse_iso_datetime(started_at)
-    uptime_seconds = max(0, int((datetime.now(UTC) - started_dt).total_seconds())) if started_dt else None
+    uptime_seconds = max(0, int((datetime.now(timezone.utc) - started_dt).total_seconds())) if started_dt else None
     state_file_updated_at = _isoformat_file_mtime(REMOTE_STATE_PATH)
     last_health_probe_at = (
         state.get("last_health_probe_at")
@@ -2026,7 +2026,7 @@ async def _build_dashboard_payload() -> dict:
     )
     preferred_probe = connectivity.get("public_health") or connectivity.get("local_health") or {}
     if preferred_probe.get("ok") is not None:
-        runtime["last_health_probe_at"] = datetime.now(UTC).isoformat()
+        runtime["last_health_probe_at"] = datetime.now(timezone.utc).isoformat()
         runtime["last_health_probe_ok"] = preferred_probe.get("ok")
         runtime["last_health_probe_latency_ms"] = preferred_probe.get("latency_ms")
         runtime["probe_age_seconds"] = 0
@@ -2038,7 +2038,7 @@ async def _build_dashboard_payload() -> dict:
     summary = _summarize_health(alerts, processes, runtime, connectivity)
 
     snapshot = {
-        "ts": datetime.now(UTC).isoformat(),
+        "ts": datetime.now(timezone.utc).isoformat(),
         "health_score": summary["health_score"],
         "health_state": summary["health_state"],
         "alert_count": summary["alert_count"],
@@ -2067,7 +2067,7 @@ async def _build_dashboard_payload() -> dict:
         }
 
     return {
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": summary,
         "runtime": runtime,
         "server": root_payload,

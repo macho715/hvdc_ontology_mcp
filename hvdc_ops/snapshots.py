@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -14,7 +14,7 @@ MANIFEST_PATH = SNAPSHOT_DIR / "manifest.json"
 
 
 def _utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _slugify(value: str) -> str:
