@@ -86,7 +86,7 @@ Verified live status on 2026-03-13:
 Validation status on 2026-03-13:
 
 - `python scripts/validate.py`
-- Result: `77 passed, 0 failed, 0 warnings`
+- Result: `110 passed, 0 failed, 0 warnings`
 
 ## 3. ChatGPT Setup And Usage
 
@@ -157,6 +157,9 @@ Implemented workaround:
 - ChatGPT uses `hvdc_render_backlog_upload_widget`
 - The widget uploads the file
 - The file is then provided to `hvdc_analyze_backlog_batch` as a temporary HTTP/HTTPS `download_url`
+- The widget is optional UI only
+- The authoritative backlog result and snapshot come from `hvdc_analyze_backlog_batch`
+- The authoritative machine-readable output is `structuredContent`
 
 Accepted file types:
 
@@ -224,7 +227,7 @@ After the upgrade:
 Codex global config on this PC:
 
 ```text
-C:\Users\jichu\.codex\config.toml
+%USERPROFILE%\.codex\config.toml
 ```
 
 Current relevant entry:
@@ -232,7 +235,7 @@ Current relevant entry:
 ```toml
 [mcp_servers.hvdc-knowledge]
 command = "cmd.exe"
-args = ["/d", "/c", 'C:\Users\jichu\Downloads\hvdc-knowledge-gpt-mcp\scripts\cursor_mcp.cmd']
+args = ["/d", "/c", '.\\scripts\\cursor_mcp.cmd']
 ```
 
 This means Codex launches the repo-local wrapper, which then starts `server.py` in `stdio` mode.

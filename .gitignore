@@ -13,3 +13,4 @@ __pycache__/
 .mypy_cache/
 Thumbs.db
 .DS_Store
+excel-mcp/workbooks/*.bak

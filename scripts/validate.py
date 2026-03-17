@@ -21,10 +21,12 @@ import socket
 import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from urllib.request import Request, urlopen
 
 # ──────────────────────────────────────────
@@ -145,6 +147,71 @@ def run_streamable_http_server(root: Path, *, port: int):
             proc.wait(timeout=5)
 
 
+@contextlib.contextmanager
+def run_excel_mcp_server(root: Path, *, port: int):
+    """Start the excel-mcp server in streamable-http mode for smoke validation."""
+    excel_root = root / "excel-mcp"
+    base_url = f"http://127.0.0.1:{port}"
+    excel_python = excel_root / ".venv" / "Scripts" / "python.exe"
+    if not excel_python.exists():
+        excel_python = excel_root / ".venv" / "bin" / "python"
+    python_exec = str(excel_python if excel_python.exists() else Path(sys.executable))
+    env = os.environ.copy()
+    env.update(
+        {
+            "EXCEL_MCP_HOST": "127.0.0.1",
+            "EXCEL_MCP_PORT": str(port),
+            "EXCEL_MCP_ROOT": str(excel_root / "workbooks"),
+        }
+    )
+    proc = subprocess.Popen(
+        [python_exec, str(excel_root / "server.py")],
+        cwd=str(excel_root),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    )
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        try:
+            with urlopen(f"{base_url}/health", timeout=1) as response:
+                if response.status == 200:
+                    break
+        except Exception:
+            time.sleep(0.25)
+    else:
+        proc.terminate()
+        proc.wait(timeout=5)
+        raise RuntimeError("Timed out waiting for excel-mcp server to start.")
+
+    try:
+        yield base_url
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def post_json(url: str, body: dict[str, Any], *, timeout: int = 20) -> dict[str, Any]:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    with urlopen(
+        Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        ),
+        timeout=timeout,
+    ) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 # ──────────────────────────────────────────
 # Phase 1: 정적 검증
 # ──────────────────────────────────────────
@@ -155,10 +222,16 @@ def check_compile():
     python_files = [
         root / "server.py",
         root / "install.py",
+        root / "scripts" / "build_logi_master.py",
         root / "scripts" / "deploy.py",
+        root / "scripts" / "export_domain_context.py",
+        root / "scripts" / "lint_repo_links.py",
         root / "scripts" / "remote_mcp.py",
         root / "scripts" / "railway_run.py",
+        root / "scripts" / "validate_logi_docs.py",
         root / "hvdc_ops" / "__init__.py",
+        root / "hvdc_ops" / "contracts.py",
+        root / "hvdc_ops" / "domain_context.py",
         root / "hvdc_ops" / "ingest.py",
         root / "hvdc_ops" / "rules.py",
         root / "hvdc_ops" / "snapshots.py",
@@ -198,7 +271,7 @@ def check_lint():
 def check_imports():
     """핵심 의존성 import 검증"""
     section("Phase 3: Import Check")
-    deps = ["mcp.server.fastmcp", "pydantic", "pandas", "openpyxl", "uvicorn", "json", "pathlib"]
+    deps = ["mcp.server.fastmcp", "pydantic", "pandas", "openpyxl", "uvicorn", "yaml", "json", "pathlib"]
     for dep in deps:
         try:
             importlib.import_module(dep)
@@ -207,17 +280,131 @@ def check_imports():
             fail(f"import {dep} FAIL - pip install -r requirements.txt")
 
 
+def check_repo_hygiene():
+    """생성 산출물 drift + 공개 문서 링크 위생 검증"""
+    section("Phase 4: Repo Hygiene / SSOT Drift")
+
+    root = Path(__file__).parent.parent
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(root / "scripts" / "export_domain_context.py"), "--check"],
+            **_SP_OPTS,
+            cwd=str(root),
+        )
+        if result.returncode == 0:
+            ok("export_domain_context --check passed")
+        else:
+            fail(f"export_domain_context --check FAIL:\n{result.stdout.strip() or result.stderr.strip()}")
+    except Exception as e:
+        fail(f"export_domain_context --check error: {e}")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(root / "scripts" / "build_logi_master.py"), "--check"],
+            **_SP_OPTS,
+            cwd=str(root),
+        )
+        if result.returncode == 0:
+            ok("build_logi_master --check passed")
+        else:
+            fail(f"build_logi_master --check FAIL:\n{result.stdout.strip() or result.stderr.strip()}")
+    except Exception as e:
+        fail(f"build_logi_master --check error: {e}")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(root / "scripts" / "lint_repo_links.py")],
+            **_SP_OPTS,
+            cwd=str(root),
+        )
+        if result.returncode == 0:
+            ok("lint_repo_links - tracked docs clean")
+        else:
+            fail(f"lint_repo_links FAIL:\n{result.stdout.strip() or result.stderr.strip()}")
+    except Exception as e:
+        fail(f"lint_repo_links error: {e}")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(root / "scripts" / "validate_logi_docs.py")],
+            **_SP_OPTS,
+            cwd=str(root),
+        )
+        if result.returncode == 0:
+            ok("validate_logi_docs passed")
+        else:
+            fail(f"validate_logi_docs FAIL:\n{result.stdout.strip() or result.stderr.strip()}")
+    except Exception as e:
+        fail(f"validate_logi_docs error: {e}")
+
+    try:
+        lint_script = root / "scripts" / "lint_repo_links.py"
+        spec = importlib.util.spec_from_file_location("lint_repo_links", lint_script)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Could not load lint_repo_links.py")
+        repo_links = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(repo_links)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_dir = Path(tmpdir)
+            sample_doc = temp_dir / "sample.md"
+            sample_doc.write_text(
+                "\n".join(
+                    [
+                        "[ok](./real.md)",
+                        "[broken](./missing.md)",
+                        "C:/Users/example/project/README.md",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (temp_dir / "real.md").write_text("ok", encoding="utf-8")
+            problems = repo_links.iter_problems(sample_doc)
+        assert any("absolute Windows path found" in problem for problem in problems)
+        assert any("broken relative link" in problem for problem in problems)
+        ok("lint_repo_links - detector catches absolute path + broken link")
+    except Exception as e:
+        fail(f"lint_repo_links detector: {e}")
+
+    try:
+        gitignore_text = (root / ".gitignore").read_text(encoding="utf-8")
+        assert ".claude/" in gitignore_text
+        ok(".gitignore - .claude local config ignored")
+    except Exception as e:
+        fail(f".gitignore local-config ignore rule: {e}")
+
+    try:
+        contract_text = (root / "docs" / "architecture" / "tool-contract.md").read_text(encoding="utf-8")
+        assert "structuredContent + content" in contract_text
+        assert "sandbox:/..." in contract_text
+        assert "hvdc_render_backlog_upload_widget" in contract_text
+        ok("tool-contract doc - structured output + widget/file-handoff rules")
+    except Exception as e:
+        fail(f"tool-contract doc: {e}")
+
+
 # ──────────────────────────────────────────
 # Phase 2: 기능 테스트
 # ──────────────────────────────────────────
 def check_tools():
     """MCP 도구 기능 통합 테스트"""
-    section("Phase 4: Tool Integration Tests")
+    section("Phase 5: Tool Integration Tests")
 
     root = Path(__file__).parent.parent
     sys.path.insert(0, str(root))
     try:
         import server
+        from hvdc_ops.contracts import (
+            BacklogBatchResult,
+            BacklogUploadWidgetResult,
+            ExcelExportPayload,
+            SelfTestResult,
+            ShipmentCaseResult,
+            SnapshotCompareResult,
+            ZeroGateCheckResult,
+        )
+        from hvdc_ops.domain_context import load_domain_rules
     except Exception as e:
         fail(f"server.py import FAIL: {e}")
         return
@@ -231,6 +418,31 @@ def check_tools():
         ok("hvdc_get_domain_summary - MOSB + Flow Code")
     except Exception as e:
         fail(f"hvdc_get_domain_summary: {e}")
+
+    # Test 1a: domain summary wording matches SSOT
+    try:
+        result = loop.run_until_complete(server.hvdc_get_domain_summary())
+        rules = load_domain_rules()
+        minimum_flow = rules["overrides"]["minimum_offshore_flow_code"]
+        dot_threshold = rules["overrides"]["dot_threshold_tons"]
+        assert f"auto-upgrade to {minimum_flow}" in result
+        assert f"DOT Rule**: MIR/SHU require DOT only when gross weight > {dot_threshold} tons." in result
+        assert "central hub" in result.lower()
+        assert "all cargo always passes mosb" not in result.lower()
+        ok("hvdc_get_domain_summary - SSOT wording aligned")
+    except Exception as e:
+        fail(f"hvdc_get_domain_summary(wording): {e}")
+
+    # Test 1b: app instructions preserve widget-first upload guidance
+    try:
+        instructions = server.APP_INSTRUCTIONS
+        assert "hvdc_render_backlog_upload_widget first" in instructions
+        assert "temporary HTTP download URL" in instructions
+        assert "authoritative backlog result comes from hvdc_analyze_backlog_batch" in instructions
+        assert "machine-readable payload is returned in structuredContent" in instructions
+        ok("APP_INSTRUCTIONS - widget-first + authoritative structuredContent guidance")
+    except Exception as e:
+        fail(f"APP_INSTRUCTIONS guidance: {e}")
 
     # Test 2: node info (전체)
     try:
@@ -359,12 +571,31 @@ def check_tools():
     except Exception as e:
         fail(f"root status payload: {e}")
 
+    # Test 9ca: health payload exposes readiness checks without breaking HTTP contract
+    try:
+        response = loop.run_until_complete(
+            server.healthcheck(
+                SimpleNamespace(headers={"host": "127.0.0.1:8000"})
+            )
+        )
+        payload = json.loads(response.body)
+        assert response.status_code == 200
+        assert payload["status"] in {"healthy", "degraded"}
+        assert "checks" in payload and len(payload["checks"]) >= 3
+        assert payload["docs_ready"] is True
+        assert payload["mcp_ready"] is True
+        assert "correlation_id" in payload and payload["correlation_id"]
+        ok("health payload - readiness fields + correlation id")
+    except Exception as e:
+        fail(f"health payload: {e}")
+
     # Test 9d: dashboard payload includes summary, connectivity, history
     try:
         payload = loop.run_until_complete(server._build_dashboard_payload())
         assert "summary" in payload and "health_score" in payload["summary"]
         assert "connectivity" in payload and "local_health" in payload["connectivity"]
         assert "history" in payload and "trend" in payload["history"]
+        assert "subservices" in payload and "excel_mcp" in payload["subservices"]
         assert "surfaces" in payload and payload["surfaces"]["summary"]["total"] >= 3
         assert "deployment" in payload["runtime"] and "provider_label" in payload["runtime"]["deployment"]
         assert payload["connectivity"]["local_health"]["ok"] is not None
@@ -467,9 +698,12 @@ def check_tools():
                 )
             )
         payload = result.structuredContent
+        ShipmentCaseResult.model_validate(payload)
         assert payload["flow_assessment"]["recommended_flow_code"] == 3
         assert payload["verdict"]["status"] == "ZERO"
         assert "markdown_summary" in payload and payload["markdown_summary"]
+        ExcelExportPayload.model_validate(payload["excel_export"])
+        assert any(sheet["name"] == "ZERO" for sheet in payload["excel_export"]["sheets"])
         ok("hvdc_analyze_shipment_case(file param) - AGI flow upgrade + ZERO")
     except Exception as e:
         fail(f"hvdc_analyze_shipment_case(file param): {e}")
@@ -486,6 +720,7 @@ def check_tools():
             )
         )
         payload = result.structuredContent
+        ShipmentCaseResult.model_validate(payload)
         assert payload["zero_gates"]["gate_results"]["DOT permit"]["status"] == "block"
         assert payload["input_source"]["sheet_name"] == "Shipments"
         ok("hvdc_analyze_shipment_case(local xlsx) - DOT block + sheet selection")
@@ -515,6 +750,7 @@ def check_tools():
             )
         )
         payload = result.structuredContent
+        ShipmentCaseResult.model_validate(payload)
         assert payload["normalized_case"]["shipment_id"] == "INLINE-001"
         assert payload["flow_assessment"]["recommended_flow_code"] == 3
         ok("hvdc_analyze_shipment_case(column_map) - override applied")
@@ -533,9 +769,11 @@ def check_tools():
             )
         )
         payload = result.structuredContent
+        BacklogUploadWidgetResult.model_validate(payload)
         assert payload["defaults"]["snapshot_name"] == "ops-widget"
         assert payload["defaults"]["sheet_name"] == "Shipments"
         assert payload["widget_uri"] == server.BACKLOG_UPLOAD_WIDGET_URI
+        assert any("temporary HTTP download URL" in line for line in payload["instructions"])
         tools = loop.run_until_complete(server.mcp.list_tools())
         widget_tool = next(tool for tool in tools if tool.name == "hvdc_render_backlog_upload_widget")
         assert widget_tool.meta["openai/outputTemplate"] == server.BACKLOG_UPLOAD_WIDGET_URI
@@ -586,8 +824,11 @@ def check_tools():
             )
         )
         payload = result.structuredContent
+        BacklogBatchResult.model_validate(payload)
         assert payload["totals"]["total_rows"] == 5
         assert payload["totals"]["zero_rows"] >= 1
+        ExcelExportPayload.model_validate(payload["excel_export"])
+        assert payload["excel_export"]["kind"] == "hvdc.backlog_batch"
         ok("hvdc_analyze_backlog_batch - snapshot saved")
     except Exception as e:
         fail(f"hvdc_analyze_backlog_batch(baseline): {e}")
@@ -636,8 +877,11 @@ def check_tools():
             )
         )
         payload = result.structuredContent
+        SnapshotCompareResult.model_validate(payload)
         assert payload["delta_totals"]["total_rows"] == 1
         assert "markdown_report" in payload and payload["markdown_report"]
+        ExcelExportPayload.model_validate(payload["excel_export"])
+        assert payload["excel_export"]["kind"] == "hvdc.snapshot_compare"
         ok("hvdc_compare_snapshots - deltas computed")
     except Exception as e:
         fail(f"hvdc_compare_snapshots: {e}")
@@ -654,6 +898,7 @@ def check_tools():
             )
         )
         payload = result.structuredContent
+        ZeroGateCheckResult.model_validate(payload)
         assert payload["gate_results"]["FANR permit"]["status"] == "not_evaluated"
         assert payload["verdict"]["status"] == "WARNING"
         ok("hvdc_zero_gate_check - not_evaluated behavior")
@@ -685,6 +930,7 @@ def check_tools():
                 )
             )
         payload = result.structuredContent
+        SelfTestResult.model_validate(payload)
         freshness = next(check for check in payload["checks"] if check["name"] == "connector freshness")
         assert freshness["status"] == "warning"
         assert payload["status"] == "warning"
@@ -768,6 +1014,7 @@ def check_tools():
             ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         structured = payload["result"]["structuredContent"]
+        SelfTestResult.model_validate(structured)
         assert structured["status"] == "pass"
         assert not [check for check in structured["checks"] if check["status"] == "fail"]
         ok("hvdc_mcp_self_test - live /mcp self-call pass")
@@ -814,12 +1061,191 @@ def check_tools():
     except Exception as e:
         fail(f"remote_mcp tailscale-funnel helpers: {e}")
 
+    # Test 26: remote runner can reconcile missing state from a healthy orphan process
+    original_candidates = None
+    original_probe_server = None
+    original_write_state = None
+    state_backup = None
+    try:
+        import scripts.remote_mcp as remote_mcp
+
+        state_backup = remote_mcp.STATE_PATH.read_text(encoding="utf-8") if remote_mcp.STATE_PATH.exists() else None
+        original_candidates = remote_mcp._candidate_server_processes
+        original_probe_server = remote_mcp.probe_server
+        original_write_state = remote_mcp.write_state
+        captured_state: dict[str, Any] = {}
+
+        remote_mcp._candidate_server_processes = lambda: [
+            {
+                "server_pid": 43210,
+                "parent_pid": None,
+                "command_line": "python server.py --transport streamable-http --port 8001 --public-base-url https://example.com",
+                "port": 8001,
+                "public_base_url": "https://example.com",
+                "host": "127.0.0.1",
+            }
+        ]
+        remote_mcp.probe_server = lambda port, public_base_url: (
+            True,
+            {
+                "health_probe_at": remote_mcp.utc_now(),
+                "health_probe_ok": True,
+                "health_probe_latency_ms": 123,
+                "server_status": {"name": "hvdc_knowledge_mcp", "transport": "streamable-http"},
+                "probes": {},
+            },
+        )
+        remote_mcp.write_state = lambda payload: captured_state.update(payload)
+        reconciled = remote_mcp.reconcile_state(preferred_port=8001, require_healthy=True)
+        assert reconciled["server_pid"] == 43210
+        assert captured_state["public_base_url"] == "https://example.com"
+        ok("remote_mcp reconcile_state - recovers healthy orphan server")
+    except Exception as e:
+        fail(f"remote_mcp reconcile_state: {e}")
+    finally:
+        if "remote_mcp" in locals() and original_candidates is not None:
+            remote_mcp._candidate_server_processes = original_candidates
+            remote_mcp.probe_server = original_probe_server
+            remote_mcp.write_state = original_write_state
+            if state_backup is None:
+                if remote_mcp.STATE_PATH.exists():
+                    remote_mcp.STATE_PATH.unlink()
+            else:
+                remote_mcp.STATE_PATH.write_text(state_backup, encoding="utf-8")
+
+    # Test 27: excel-mcp live smoke + export application
+    try:
+        excel_port = _free_port()
+        with run_excel_mcp_server(root, port=excel_port) as excel_base_url:
+            health_payload = json.loads(urlopen(f"{excel_base_url}/health", timeout=10).read().decode("utf-8"))
+            assert health_payload["status"] == "healthy"
+
+            initialize_payload = post_json(
+                f"{excel_base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "validate", "version": "1.0"},
+                    },
+                },
+            )
+            assert initialize_payload["result"]["serverInfo"]["name"] == "Excel MCP Starter"
+
+            workbook_path = "validate-smoke.xlsx"
+            create_payload = post_json(
+                f"{excel_base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": "create",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "create_workbook",
+                        "arguments": {"path": workbook_path, "sheets": ["Summary"]},
+                    },
+                },
+            )
+            assert create_payload["result"]["structuredContent"]["ok"] is True
+
+            write_range_payload = post_json(
+                f"{excel_base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": "write-range",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "write_range",
+                        "arguments": {
+                            "path": workbook_path,
+                            "sheet": "Summary",
+                            "start_cell": "A1",
+                            "values": [["shipment_id", "status"], ["AGI-001", "ZERO"]],
+                        },
+                    },
+                },
+            )
+            assert write_range_payload["result"]["structuredContent"]["range"] == "A1:B2"
+
+            backlog_result = loop.run_until_complete(
+                server.hvdc_analyze_backlog_batch(
+                    server.BacklogBatchInput(
+                        local_path=str(sample_csv),
+                        snapshot_name="ops-excel-export",
+                    )
+                )
+            )
+            export_payload = backlog_result.structuredContent["excel_export"]
+            apply_payload = post_json(
+                f"{excel_base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": "apply-export",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "apply_hvdc_export",
+                        "arguments": {
+                            "path": "hvdc-export.xlsx",
+                            "export": export_payload,
+                            "overwrite": True,
+                        },
+                    },
+                },
+            )
+            structured = apply_payload["result"]["structuredContent"]
+            assert structured["ok"] is True
+            assert {sheet["name"] for sheet in structured["sheets"]} == {"Summary", "ZERO", "KPI", "Exceptions"}
+            ok("excel-mcp live smoke - initialize/write_range/apply_hvdc_export")
+    except Exception as e:
+        fail(f"excel-mcp live smoke: {e}")
+
+    # Test 28: excel-mcp invalid extension and empty range write fail explicitly
+    try:
+        excel_port = _free_port()
+        with run_excel_mcp_server(root, port=excel_port) as excel_base_url:
+            invalid_extension = post_json(
+                f"{excel_base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": "bad-ext",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "create_workbook",
+                        "arguments": {"path": "not-allowed.csv"},
+                    },
+                },
+            )
+            empty_write = post_json(
+                f"{excel_base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": "empty-write",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "write_range",
+                        "arguments": {
+                            "path": "empty.xlsx",
+                            "sheet": "Summary",
+                            "start_cell": "A1",
+                            "values": [],
+                        },
+                    },
+                },
+            )
+            assert invalid_extension["result"]["isError"] is True
+            assert empty_write["result"]["isError"] is True
+            ok("excel-mcp validation errors - invalid extension + empty write")
+    except Exception as e:
+        fail(f"excel-mcp validation errors: {e}")
+
     loop.close()
 
 
 def check_security():
     """보안 검증 — path traversal 차단 확인"""
-    section("Phase 5: Security Tests")
+    section("Phase 6: Security Tests")
 
     sys.path.insert(0, str(Path(__file__).parent.parent))
     import server
@@ -853,30 +1279,44 @@ def check_security():
 # ──────────────────────────────────────────
 def check_structure():
     """프로젝트 파일 구조 검증"""
-    section("Phase 6: Project Structure")
+    section("Phase 7: Project Structure")
 
     root = Path(__file__).parent.parent
     required = [
+        "config/domain_rules.yaml",
         "server.py",
         "Dockerfile",
         "railway.json",
         "CLAUDE.md",
         "README.md",
+        "CHATGPT_CODEX_CURSOR_HANDOFF.md",
         "WINDOWS_MULTI_PC_PACKAGE.md",
         "SETUP_WINDOWS_CLIENT.cmd",
         "SETUP_WINDOWS_FULL.cmd",
         "requirements.txt",
+        "hvdc_ops/contracts.py",
+        "hvdc_ops/domain_context.py",
         "hvdc_ops/ingest.py",
         "hvdc_ops/rules.py",
+        "docs/architecture/tool-contract.md",
+        "scripts/export_domain_context.py",
+        "scripts/lint_repo_links.py",
         "scripts/remote_mcp.py",
         "scripts/railway_run.py",
         "scripts/cursor_mcp.cmd",
+        "scripts/start-excel-mcp.ps1",
         "scripts/setup_windows_client.ps1",
         "scripts/build_windows_portable_bundle.ps1",
+        ".github/workflows/ci.yml",
         ".codex/config.toml",
-        ".claude/settings.json",
         ".cursor/mcp.json",
         ".cursor/rules/hvdc-domain-background.mdc",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "docs/MCP_SECURITY_READINESS.md",
+        "excel-mcp/server.py",
+        "excel-mcp/README_KR.md",
+        "excel-mcp/.env.example",
         "tests/fixtures/analysis_backlog_sample.csv",
         "tests/fixtures/analysis_backlog_sample.xlsx",
         "widgets/hvdc_backlog_upload_v1.html",
@@ -900,19 +1340,9 @@ def check_structure():
 
     settings_path = root / ".claude" / "settings.json"
     if settings_path.exists():
-        try:
-            data = json.loads(settings_path.read_text(encoding="utf-8"))
-            servers = data.get("mcpServers", {})
-            if "hvdc-knowledge" in servers:
-                srv = servers["hvdc-knowledge"]
-                if srv.get("command") and srv.get("args"):
-                    ok("settings.json - hvdc-knowledge config OK")
-                else:
-                    fail("settings.json - command/args missing")
-            else:
-                fail("settings.json - hvdc-knowledge key missing")
-        except json.JSONDecodeError:
-            fail("settings.json - JSON parse error")
+        ok(".claude/settings.json present - treated as local machine config only")
+    else:
+        ok(".claude/settings.json absent - repo correctly treats Claude config as local-only")
 
     cursor_mcp_path = root / ".cursor" / "mcp.json"
     if cursor_mcp_path.exists():
@@ -934,17 +1364,30 @@ def check_structure():
     cursor_wrapper_path = root / "scripts" / "cursor_mcp.cmd"
     if cursor_wrapper_path.exists():
         try:
-            result = subprocess.run(
-                ["cmd.exe", "/d", "/c", str(cursor_wrapper_path), "--help"],
-                **_SP_OPTS,
-                cwd=str(root),
-            )
-            if result.returncode == 0 and "HVDC Knowledge MCP server" in result.stdout:
-                ok("Cursor wrapper - server.py help reachable")
+            text = cursor_wrapper_path.read_text(encoding="utf-8")
+            if (
+                '".venv\\Scripts\\python.exe" server.py %*' in text
+                and "py -3 server.py %*" in text
+                and "python server.py %*" in text
+            ):
+                ok("Cursor wrapper - runtime fallback chain OK")
             else:
-                fail("Cursor wrapper - failed to launch server.py --help")
+                fail("Cursor wrapper - expected fallback chain missing")
         except Exception as e:
-            fail(f"Cursor wrapper - execution error: {e}")
+            fail(f"Cursor wrapper - validation error: {e}")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "server.py", "--help"],
+            **_SP_OPTS,
+            cwd=str(root),
+        )
+        if result.returncode == 0 and "HVDC Knowledge MCP server" in result.stdout:
+            ok("server.py --help reachable from current runtime")
+        else:
+            fail("server.py --help not reachable from current runtime")
+    except Exception as e:
+        fail(f"server.py --help check error: {e}")
 
     codex_config_path = root / ".codex" / "config.toml"
     if codex_config_path.exists():
@@ -1009,12 +1452,38 @@ def check_structure():
     if cursor_rule_path.exists():
         try:
             text = cursor_rule_path.read_text(encoding="utf-8")
-            if "alwaysApply: true" in text and "hvdc-knowledge" in text:
-                ok("Cursor rule - alwaysApply + MCP guidance OK")
+            if (
+                "alwaysApply: true" in text
+                and "hvdc-knowledge" in text
+                and "generated from config/domain_rules.yaml" in text
+            ):
+                ok("Cursor rule - alwaysApply + MCP guidance + generated marker OK")
             else:
-                fail("Cursor rule - missing alwaysApply or MCP guidance")
+                fail("Cursor rule - missing alwaysApply, MCP guidance, or generated marker")
         except OSError as e:
             fail(f"Cursor rule - read error: {e}")
+
+    agents_path = root / "AGENTS.md"
+    if agents_path.exists():
+        try:
+            text = agents_path.read_text(encoding="utf-8")
+            if "GENERATED FROM `config/domain_rules.yaml`" in text and "DO NOT EDIT MANUALLY" in text:
+                ok("AGENTS.md - generated artifact marker OK")
+            else:
+                fail("AGENTS.md - generated artifact marker missing")
+        except OSError as e:
+            fail(f"AGENTS.md - read error: {e}")
+
+    readme_path = root / "README.md"
+    if readme_path.exists():
+        try:
+            text = readme_path.read_text(encoding="utf-8")
+            if "GENERATED_DOMAIN_ONE_PAGER:START" in text and "generated from config/domain_rules.yaml" in text:
+                ok("README.md - generated one-pager markers OK")
+            else:
+                fail("README.md - generated one-pager markers missing")
+        except OSError as e:
+            fail(f"README.md - read error: {e}")
 
     railway_path = root / "railway.json"
     if railway_path.exists():
@@ -1025,6 +1494,28 @@ def check_structure():
             ok("railway.json - builder + healthcheck OK")
         except Exception as e:
             fail(f"railway.json - invalid: {e}")
+
+    workflow_path = root / ".github" / "workflows" / "ci.yml"
+    if workflow_path.exists():
+        try:
+            text = workflow_path.read_text(encoding="utf-8")
+            if "ubuntu-latest" in text and "windows-latest" in text and "scripts/validate.py" in text:
+                ok("GitHub Actions CI - ubuntu matrix + windows smoke wired")
+            else:
+                fail("GitHub Actions CI - expected jobs or commands missing")
+        except OSError as e:
+            fail(f"GitHub Actions CI - read error: {e}")
+
+    excel_launcher_path = root / "scripts" / "start-excel-mcp.ps1"
+    if excel_launcher_path.exists():
+        try:
+            text = excel_launcher_path.read_text(encoding="utf-8")
+            if "SmokeTest" in text and "EXCEL_MCP_PORT" in text and "server.py" in text:
+                ok("Excel launcher ps1 - install/start/smoke hooks present")
+            else:
+                fail("Excel launcher ps1 - missing smoke or env wiring")
+        except OSError as e:
+            fail(f"Excel launcher ps1 - read error: {e}")
 
 
 # ──────────────────────────────────────────
@@ -1045,6 +1536,7 @@ def main():
     check_imports()
 
     if not args.quick:
+        check_repo_hygiene()
         check_lint()
         check_tools()
         check_security()

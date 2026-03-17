@@ -1,0 +1,176 @@
+version: 1
+
+project:
+  client: "Samsung C&T x ADNOC x DSV, UAE HVDC Project"
+  role: "SCM/Logistics (Invoice Audit, Customs, Marine Ops, WH Management)"
+  scale: "~400 TEU / 100 BL per month, 6 sites"
+  key_partners:
+    - "ADNOC L&S (ALS)"
+    - "DSV"
+    - "JDN"
+    - "Mammoet"
+    - "Hitachi"
+
+nodes:
+  - name: "Zayed Port"
+    short_name: "Zayed Port"
+    type: "Import Port"
+    customs_code: "47150"
+    locode: "AEZYD"
+    summary: "Bulk/Heavy cargo"
+  - name: "Khalifa Port"
+    short_name: "Khalifa Port"
+    type: "Import Port"
+    customs_code: "47150"
+    locode: "AEAUH"
+    summary: "Container cargo"
+  - name: "Jebel Ali"
+    short_name: "Jebel Ali"
+    type: "Import Port"
+    customs_code: "1485718"
+    locode: "AEJEA"
+    summary: "Freezone / ADOPT"
+  - name: "MOSB"
+    short_name: "MOSB"
+    type: "Central Hub"
+    capacity_sqm: 20000
+    summary: "Central hub, 20,000 sqm, SCT resident team"
+  - name: "MIR"
+    short_name: "MIR"
+    type: "Onshore Site"
+    laydown_sqm: 35006
+    summary: "SPMT operations, DOT > 90t"
+  - name: "SHU"
+    short_name: "SHU"
+    type: "Onshore Site"
+    laydown_sqm: 10556
+    summary: "SPMT operations, DOT > 90t"
+  - name: "DAS"
+    short_name: "DAS"
+    type: "Offshore Site"
+    summary: "20h LCT, MOSB leg mandatory"
+  - name: "AGI"
+    short_name: "AGI"
+    type: "Offshore Site"
+    summary: "10h LCT, MOSB leg mandatory"
+
+flow_codes:
+  - code: 0
+    description: "Pre Arrival"
+  - code: 1
+    description: "Port -> Site (direct, no WH)"
+  - code: 2
+    description: "Port -> WH -> Site"
+  - code: 3
+    description: "Port -> MOSB -> Site"
+  - code: 4
+    description: "Port -> WH -> MOSB -> Site"
+  - code: 5
+    description: "Mixed / Waiting / Incomplete"
+
+flow_algorithm:
+  formula: "FLOW = 0 if PreArrival else clip(wh_count + offshore + 1, 1, 4)"
+  wh_count_note: "warehouse legs excluding MOSB"
+  offshore_note: "1 if a MOSB leg exists, otherwise 0"
+
+overrides:
+  offshore_sites:
+    - "AGI"
+    - "DAS"
+  onshore_sites:
+    - "MIR"
+    - "SHU"
+  minimum_offshore_flow_code: 3
+  dot_threshold_tons: 90
+  mosb_capacity_sqm: 20000
+  wording:
+    mosb: "MOSB is the central hub and has a 20,000 sqm capacity limit."
+    onshore: "Direct and non-MOSB flows remain valid for onshore cases unless another rule blocks them."
+  forbidden_phrases:
+    - "ALL cargo passes"
+    - "all cargo always passes MOSB"
+
+kpi_gates:
+  - key: "invoice_ocr"
+    label: "invoice-ocr"
+    threshold: 98.0
+    direction: ">="
+    unit: "%"
+  - key: "invoice_audit_delta"
+    label: "invoice-audit delta"
+    threshold: 2.0
+    direction: "<="
+    unit: "%"
+  - key: "cost_guard_warn_rate"
+    label: "cost-guard warn rate"
+    threshold: 5.0
+    direction: "<="
+    unit: "%"
+  - key: "hs_risk_misclass"
+    label: "hs-risk misclass"
+    threshold: 0.5
+    direction: "<="
+    unit: "%"
+  - key: "cert_chk_auto_pass"
+    label: "cert-chk auto-pass"
+    threshold: 90.0
+    direction: ">="
+    unit: "%"
+  - key: "wh_forecast_util"
+    label: "wh-forecast util"
+    threshold: 85.0
+    direction: "<="
+    unit: "%"
+  - key: "weather_tie_eta_mape"
+    label: "weather-tie ETA MAPE"
+    threshold: 12.0
+    direction: "<="
+    unit: "%"
+
+regulations:
+  FANR:
+    requirement: "방사선 수입허가 (60일)"
+    trigger: "방사선 기자재"
+    block_action: "BOE 제출 중단"
+  MOIAT_ECAS:
+    requirement: "적합성 인증"
+    trigger: "규제 전기제품"
+    block_action: "DO/GatePass 발급 금지"
+  MOIAT_EQM:
+    requirement: "규제 제품 품질 마크 / 관련 인증"
+    trigger: "특정 규제 제품군"
+    block_action: "출고 또는 현장 반입 보류"
+  DOT:
+    requirement: "중량물 운송 허가"
+    trigger: ">90톤"
+    block_action: "이송 금지"
+  CICPA:
+    requirement: "게이트패스"
+    trigger: "항만/MOSB 출입"
+    block_action: "출입 불가"
+  ADNOC_FRA:
+    requirement: "리프팅 위험성 평가"
+    trigger: "LCT 선적 전"
+    block_action: "선적 중단"
+
+zero_gates:
+  - name: "eBL mismatch"
+    action: "Hold berth confirmation"
+  - name: "BOE field gaps"
+    action: "Stop customs filing"
+  - name: "FANR permit missing"
+    action: "Hold arrival approval"
+  - name: "MOSB capacity exceeded"
+    action: "Stop additional intake (>20,000 sqm)"
+  - name: "DOT permit missing"
+    action: "Stop inland move (>90t)"
+  - name: "Weather alert"
+    action: "Delay LCT departure"
+
+ontology_standards:
+  - "UN/CEFACT"
+  - "WCO-DM v4.2"
+  - "DCSA eBL 3.0"
+  - "ICC Incoterms 2020"
+  - "HS-2022"
+  - "BIMCO SUPPLYTIME 2017"

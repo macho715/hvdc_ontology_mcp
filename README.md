@@ -14,31 +14,44 @@
 
 상세 인수인계 문서:
 
-- [CHATGPT_CODEX_CURSOR_HANDOFF.md](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/CHATGPT_CODEX_CURSOR_HANDOFF.md)
-- [WINDOWS_MULTI_PC_PACKAGE.md](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/WINDOWS_MULTI_PC_PACKAGE.md)
+- [CHATGPT_CODEX_CURSOR_HANDOFF.md](./CHATGPT_CODEX_CURSOR_HANDOFF.md)
+- [WINDOWS_MULTI_PC_PACKAGE.md](./WINDOWS_MULTI_PC_PACKAGE.md)
 
 ## 지원 아키텍처
 
-- `tool-only` ChatGPT app
-- UI 위젯 없이 원격 MCP 서버만 노출
+- `tool-first` MCP server with optional widget flows
+- ChatGPT remote usage is primarily tool-driven, with widget support for CSV/XLSX upload flows
 - 회사 지식/문서 검색 용도에 맞춰 `search` / `fetch` 스키마 적용
 
 ## 프로젝트 구조
 
 ```text
 hvdc-knowledge-gpt-mcp/
+├── config/
+│   └── domain_rules.yaml
 ├── server.py
 ├── README.md
 ├── requirements.txt
 ├── install.py
+├── .codex/
+│   └── config.toml
+├── .cursor/
+│   ├── mcp.json
+│   └── rules/
+│       └── hvdc-domain-background.mdc
+├── hvdc_ops/
+├── excel-mcp/
+├── widgets/
 ├── scripts/
 │   ├── validate.py
 │   ├── deploy.py
-│   └── remote_mcp.py
-├── .claude/
-│   └── settings.json
+│   ├── remote_mcp.py
+│   ├── start-excel-mcp.ps1
+│   ├── export_domain_context.py
+│   └── lint_repo_links.py
 └── docs/
-    └── Logi ontol core doc/
+    ├── Logi ontol core doc/
+    └── architecture/
 ```
 
 ## 요구사항
@@ -64,10 +77,36 @@ pip install -r requirements.txt
 
 Windows 다른 PC로 옮겨 바로 쓰는 경우:
 
-- 더블클릭: [SETUP_WINDOWS_CLIENT.cmd](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/SETUP_WINDOWS_CLIENT.cmd)
-- 풀옵 원클릭: [SETUP_WINDOWS_FULL.cmd](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/SETUP_WINDOWS_FULL.cmd)
-- 문서: [WINDOWS_MULTI_PC_PACKAGE.md](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/WINDOWS_MULTI_PC_PACKAGE.md)
-- 패키지 생성 스크립트: [build_windows_portable_bundle.ps1](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/scripts/build_windows_portable_bundle.ps1)
+- 더블클릭: [SETUP_WINDOWS_CLIENT.cmd](./SETUP_WINDOWS_CLIENT.cmd)
+- 풀옵 원클릭: [SETUP_WINDOWS_FULL.cmd](./SETUP_WINDOWS_FULL.cmd)
+- 문서: [WINDOWS_MULTI_PC_PACKAGE.md](./WINDOWS_MULTI_PC_PACKAGE.md)
+- 패키지 생성 스크립트: [build_windows_portable_bundle.ps1](./scripts/build_windows_portable_bundle.ps1)
+
+### 1a. Excel MCP 동반 실행
+
+Excel 서브 MCP는 메인 HVDC MCP와 분리되어 동작합니다.
+
+- 기본 포트: `127.0.0.1:8002`
+- 설치/실행 스크립트: [start-excel-mcp.ps1](./scripts/start-excel-mcp.ps1)
+- 문서: [excel-mcp/README_KR.md](./excel-mcp/README_KR.md)
+
+설치:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-excel-mcp.ps1 -InstallDeps
+```
+
+로컬 실행:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-excel-mcp.ps1
+```
+
+Windows smoke test:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-excel-mcp.ps1 -SmokeTest
+```
 
 ### 2. Claude용 실행
 
@@ -85,9 +124,9 @@ Cursor에서는 프로젝트 루트의 `.cursor/mcp.json`으로 MCP 서버를 �
 
 이 저장소에는 이미 다음 파일이 포함돼 있습니다.
 
-- [mcp.json](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/.cursor/mcp.json)
-- [hvdc-domain-background.mdc](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/.cursor/rules/hvdc-domain-background.mdc)
-- [cursor_mcp.cmd](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/scripts/cursor_mcp.cmd)
+- [mcp.json](./.cursor/mcp.json)
+- [hvdc-domain-background.mdc](./.cursor/rules/hvdc-domain-background.mdc)
+- [cursor_mcp.cmd](./scripts/cursor_mcp.cmd)
 
 설정 내용:
 
@@ -115,8 +154,8 @@ Codex는 이 저장소의 프로젝트 스코프 설정 파일 `.codex/config.to
 
 이 저장소에는 이미 다음 파일이 포함돼 있습니다.
 
-- [config.toml](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/.codex/config.toml)
-- [cursor_mcp.cmd](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/scripts/cursor_mcp.cmd)
+- [config.toml](./.codex/config.toml)
+- [cursor_mcp.cmd](./scripts/cursor_mcp.cmd)
 
 설정 내용:
 
@@ -142,30 +181,35 @@ codex exec --skip-git-repo-check "Call hvdc_get_domain_summary and return only a
 - `.codex/config.toml`은 프로젝트 단위 설정입니다.
 - 같은 저장소를 다른 PC에 복사하거나 clone하면 Codex MCP 설정도 같이 따라갑니다.
 - 전역 `%USERPROFILE%\\.codex\\config.toml` 등록은 이제 선택 사항입니다.
+- `.claude/settings.json`은 로컬 머신별 경로를 담는 환경 파일이므로 공개 저장소 기준 설정 문서에 포함하지 않습니다.
 
 #### HVDC Domain Rules - Coding-Safe One Pager
 
+<!-- GENERATED_DOMAIN_ONE_PAGER:START -->
+
+<!-- generated from config/domain_rules.yaml; do not edit manually -->
+
 이 섹션은 Cursor/Agent가 읽을 배경지식과 사람이 구현 규칙을 빠르게 확인하는 용도로 씁니다.
 
-- Scope: SCM / Logistics, Invoice Audit, Customs Clearance, Marine Operations, Warehouse Management
-- Scale: about 400 TEU and 100 BL per month
+- Scope: SCM/Logistics (Invoice Audit, Customs, Marine Ops, WH Management)
+- Scale: ~400 TEU / 100 BL per month, 6 sites
 - Sites: MIR, SHU, DAS, AGI plus import ports and MOSB hub
 
 Core nodes:
 
-- Zayed Port (`AEZYD`): bulk and heavy cargo import port
-- Khalifa Port: container cargo import port
-- Jebel Ali: freezone / ADOPT import path
-- MOSB: central hub, `20,000 sqm`, SCT resident team
-- MIR: onshore site, `35,006 sqm`, SPMT operations
-- SHU: onshore site, `10,556 sqm`, SPMT operations
-- DAS: offshore site, LCT route, MOSB leg mandatory
-- AGI: offshore site, LCT route, MOSB leg mandatory
+- Zayed Port (`AEZYD`): Bulk/Heavy cargo
+- Khalifa Port (`AEAUH`): Container cargo
+- Jebel Ali (`AEJEA`): Freezone / ADOPT
+- MOSB: Central hub, 20,000 sqm, SCT resident team
+- MIR: SPMT operations, DOT > 90t
+- SHU: SPMT operations, DOT > 90t
+- DAS: 20h LCT, MOSB leg mandatory
+- AGI: 10h LCT, MOSB leg mandatory
 
 Flow Code v3.5:
 
 - `0`: Pre Arrival
-- `1`: Port -> Site
+- `1`: Port -> Site (direct, no WH)
 - `2`: Port -> WH -> Site
 - `3`: Port -> MOSB -> Site
 - `4`: Port -> WH -> MOSB -> Site
@@ -175,7 +219,7 @@ Flow calculation rule:
 
 - `FLOW = 0 if PreArrival else clip(wh_count + offshore + 1, 1, 4)`
 - `wh_count` means warehouse legs excluding MOSB
-- `offshore = 1` if MOSB leg exists, otherwise `0`
+- `offshore = 1 if a MOSB leg exists, otherwise 0`
 
 Mandatory flow overrides:
 
@@ -185,9 +229,9 @@ Mandatory flow overrides:
 
 MOSB interpretation:
 
-- Treat MOSB as the central operational hub
+- MOSB is the central hub and has a 20,000 sqm capacity limit.
 - Do not hardcode "all cargo always passes MOSB" as a universal rule
-- Direct and non-MOSB flows still exist for valid onshore cases through Flow Code `1` and `2`
+- Direct and non-MOSB flows remain valid for onshore cases unless another rule blocks them.
 - Enforce MOSB strictly for `AGI` and `DAS`
 
 Onshore transport rule:
@@ -198,36 +242,36 @@ Onshore transport rule:
 
 Regulatory gates:
 
-- `FANR`: radiation import permit, valid for 60 days
-- `MOIAT_ECAS`: conformity requirement for regulated electrical products
-- `MOIAT_EQM`: regulated product conformity mark / related certification handling
-- `DOT`: heavy transport permit for `> 90 tons`
-- `CICPA`: gate pass for port and MOSB access
-- `ADNOC_FRA`: lifting risk assessment required before LCT loading
+- `FANR`: 방사선 수입허가 (60일)
+- `MOIAT_ECAS`: 적합성 인증
+- `MOIAT_EQM`: 규제 제품 품질 마크 / 관련 인증
+- `DOT`: 중량물 운송 허가
+- `CICPA`: 게이트패스
+- `ADNOC_FRA`: 리프팅 위험성 평가
 
 ZERO gate triggers:
 
-- eBL mismatch -> hold berth confirmation
-- BOE required fields missing -> stop customs filing
-- FANR permit missing -> hold import approval
-- MOSB utilization above capacity -> stop additional inbound intake
-- DOT permit missing for `> 90t` -> stop transport
-- weather alert active -> delay LCT departure
+- eBL mismatch -> Hold berth confirmation
+- BOE field gaps -> Stop customs filing
+- FANR permit missing -> Hold arrival approval
+- MOSB capacity exceeded -> Stop additional intake (>20,000 sqm)
+- DOT permit missing -> Stop inland move (>90t)
+- Weather alert -> Delay LCT departure
 
 KPI gates:
 
-- `invoice-ocr >= 98%`
-- `invoice-audit delta <= 2%`
-- `cost-guard warn rate <= 5%`
+- `invoice-ocr >= 98.0%`
+- `invoice-audit delta <= 2.0%`
+- `cost-guard warn rate <= 5.0%`
 - `hs-risk misclass <= 0.5%`
-- `cert-chk auto-pass >= 90%`
-- `wh-forecast util <= 85%`
-- `weather-tie ETA MAPE <= 12%`
+- `cert-chk auto-pass >= 90.0%`
+- `wh-forecast util <= 85.0%`
+- `weather-tie ETA MAPE <= 12.0%`
 
 Coding constants:
 
-- Offshore nodes: `AGI`, `DAS`
-- Onshore nodes: `MIR`, `SHU`
+- Offshore nodes: `AGI, DAS`
+- Onshore nodes: `MIR, SHU`
 - MOSB capacity: `20,000 sqm`
 - DOT threshold: `90 tons`
 - AGI/DAS minimum flow: `3`
@@ -254,6 +298,8 @@ Practical decision rule:
 - If a shipment is for `AGI` or `DAS`, first validate MOSB leg and Flow Code
 - If a shipment is for `MIR` or `SHU`, first validate gross weight and DOT threshold
 - If evidence for permits, BOE, eBL, or weather is missing, do not return a clean pass
+
+<!-- GENERATED_DOMAIN_ONE_PAGER:END -->
 
 #### Cursor Prompt Cookbook
 
@@ -428,9 +474,9 @@ python scripts/remote_mcp.py remove-startup
 
 Railway로 옮길 때는 저장소에 포함된 배포 파일을 그대로 쓰면 됩니다.
 
-- [Dockerfile](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/Dockerfile)
-- [railway.json](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/railway.json)
-- [railway_run.py](c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/scripts/railway_run.py)
+- [Dockerfile](./Dockerfile)
+- [railway.json](./railway.json)
+- [railway_run.py](./scripts/railway_run.py)
 
 기본 배포 순서:
 
@@ -462,7 +508,7 @@ https://<railway-public-domain>/dashboard
 
 ## ChatGPT 연결 방법
 
-OpenAI Apps SDK 문서 기준으로, 이 서버는 UI 없는 `tool-only` app입니다.
+OpenAI Apps SDK 문서 기준으로, 이 서버는 `tool-first MCP server with optional widget flows` 구성입니다.
 
 1. `python server.py --transport streamable-http ...` 로 서버 실행
 2. `ngrok http 8000` 또는 Cloudflare Tunnel로 HTTPS URL 확보
@@ -470,6 +516,12 @@ OpenAI Apps SDK 문서 기준으로, 이 서버는 UI 없는 `tool-only` app입�
 4. `Settings → Connectors → Create` 로 이동
 5. Connector URL에 `https://<public-host>/mcp` 입력
 6. 새 채팅에서 해당 app을 추가 후 도구 호출
+
+중요:
+
+- upload widget은 ChatGPT 업로드 흐름을 여는 optional UI입니다.
+- authoritative backlog result는 `hvdc_analyze_backlog_batch`가 반환합니다.
+- authoritative machine-readable payload는 `structuredContent`입니다.
 
 원클릭 스크립트를 쓴 경우에는 `python scripts/remote_mcp.py start` 출력의 `Connector URL` 값을 그대로 사용하면 됩니다.
 Tailscale Funnel 모드에서는 `https://<hostname>.ts.net/mcp` 를 그대로 사용하면 됩니다.
@@ -493,6 +545,14 @@ Railway에서는 `https://<railway-public-domain>/mcp` 를 그대로 사용하�
 - `POST|GET|DELETE /mcp` : MCP endpoint
 - `GET /docs` : 문서 인덱스
 - `GET /docs/{doc_id}` : 문서 원문
+
+운영 대시보드에 Excel MCP readiness를 표시하려면 선택적으로 다음 env를 설정합니다.
+
+```text
+HVDC_EXCEL_MCP_URL=http://127.0.0.1:8002
+```
+
+`/mcp` 전체 URL을 넣어도 동작하지만, 기본값은 Excel MCP base URL입니다.
 
 ## MCP 도구
 
@@ -581,6 +641,7 @@ python scripts/validate.py --quick
 - `hvdc_zero_gate_check` `not_evaluated` 동작 테스트
 - `hvdc_compare_snapshots` delta 계산 테스트
 - `hvdc_mcp_self_test` stale connector 감지 테스트
+- `APP_INSTRUCTIONS` widget-first / authoritative `structuredContent` guidance 테스트
 - ChatGPT 표준 `search` / `fetch` 응답 형식 테스트
 - path traversal 차단 테스트
 
@@ -592,9 +653,13 @@ python scripts/validate.py --quick
 - `hvdc_analyze_*`의 `local_path`는 보안상 `stdio` 실행에서만 허용됩니다.
 - Railway 같은 remote MCP 서버는 ChatGPT의 `sandbox:/...` 경로를 직접 읽을 수 없습니다.
 - ChatGPT에서 CSV/XLSX를 올릴 때는 `hvdc_render_backlog_upload_widget`을 사용해 temporary HTTP `download_url`을 받아야 합니다.
+- upload widget은 optional UI일 뿐이며, authoritative backlog result와 snapshot 생성은 `hvdc_analyze_backlog_batch`가 담당합니다.
+- authoritative machine-readable output은 `structuredContent`입니다.
 - 대시보드의 `ChatGPT Upload` 카드에서 widget readiness, 허용 확장자, `sandbox:/...` 직접 읽기 불가 여부를 바로 확인할 수 있습니다.
 - 대시보드의 `Client Surfaces` 카드에서 `ChatGPT`, `Cursor`, `Codex`별 준비 상태와 다음 조치를 바로 확인할 수 있습니다.
 - 대시보드의 `Self Test` 섹션은 `/dashboard/self-test`를 호출해 local/public health, dashboard, MCP initialize, tools/list, sample tool call을 재검증합니다.
+- `GET /health` 는 `status`, `checks`, `docs_ready`, `mcp_ready`, `public_probe_ok`, `correlation_id`를 포함하는 additive JSON health payload를 반환합니다.
+- `HVDC_EXCEL_MCP_URL`이 설정되면 `/dashboard/status`의 `subservices.excel_mcp`에 Excel health / initialize 상태가 같이 노출됩니다.
 - widget resource에는 Apps SDK 제출 기준에 맞춰 `_meta.ui.domain`, `_meta.ui.csp`, `openai/widgetDomain`, `openai/widgetCSP`가 포함됩니다.
 - 공개 배포가 아니라면 인증/OAuth는 아직 붙어 있지 않습니다.
 - `scripts/remote_mcp.py`는 Windows amd64에서 `cloudflared` 자동 다운로드를 지원합니다. 다른 OS는 PATH에 `cloudflared`가 있어야 합니다.

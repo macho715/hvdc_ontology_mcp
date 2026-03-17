@@ -15,6 +15,7 @@ import argparse
 import asyncio
 from collections import deque
 import contextlib
+import contextvars
 from datetime import datetime, UTC
 import json
 import logging
@@ -22,11 +23,13 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import time
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
 from urllib.request import Request as UrlRequest, urlopen
+import uuid
 
 from hvdc_ops import (
     analyze_backlog,
@@ -44,6 +47,16 @@ from hvdc_ops import (
     save_snapshot,
     select_record,
 )
+from hvdc_ops.contracts import (
+    BacklogBatchResult,
+    BacklogUploadWidgetResult,
+    ExcelExportPayload,
+    SelfTestResult,
+    ShipmentCaseResult,
+    SnapshotCompareResult,
+    ZeroGateCheckResult,
+)
+from hvdc_ops.domain_context import doc_markdown_files, load_domain_rules, render_domain_summary_markdown
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent
@@ -54,8 +67,72 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ───────────────────────────────────────────────
 # 로깅 (stderr — stdio transport에서 stdout 오염 방지)
 # ───────────────────────────────────────────────
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+_correlation_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "hvdc_correlation_id",
+    default="",
+)
+
+
+class JsonLineFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": datetime.now(UTC).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "correlation_id": getattr(record, "correlation_id", None) or _correlation_id_var.get() or None,
+        }
+        for field in (
+            "event",
+            "component",
+            "path",
+            "method",
+            "status_code",
+            "tool_name",
+            "target",
+        ):
+            value = getattr(record, field, None)
+            if value is not None:
+                payload[field] = value
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+_root_handler = logging.StreamHandler(stream=sys.stderr)
+_root_handler.setFormatter(JsonLineFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[_root_handler], force=True)
 logger = logging.getLogger("hvdc_knowledge_mcp")
+
+
+def _current_correlation_id() -> str:
+    return _correlation_id_var.get() or ""
+
+
+def _new_correlation_id() -> str:
+    return uuid.uuid4().hex
+
+
+@contextlib.contextmanager
+def _correlation_scope(correlation_id: str | None = None):
+    token = _correlation_id_var.set(correlation_id or _new_correlation_id())
+    try:
+        yield _correlation_id_var.get()
+    finally:
+        _correlation_id_var.reset(token)
+
+
+def _request_correlation_id(request: Request | None = None) -> str:
+    if request is not None and hasattr(request, "headers"):
+        for header in ("x-correlation-id", "x-request-id"):
+            value = str(request.headers.get(header, "")).strip()
+            if value:
+                return value
+    return _current_correlation_id() or _new_correlation_id()
+
+
+def _log_event(level: int, message: str, **fields: Any) -> None:
+    logger.log(level, message, extra=fields)
 
 # ───────────────────────────────────────────────
 # 환경 기본값
@@ -97,6 +174,9 @@ APP_INSTRUCTIONS = (
     "When a ChatGPT user wants to upload a CSV/XLSX for backlog analysis, call "
     "hvdc_render_backlog_upload_widget first so the widget can upload the file "
     "and pass a temporary HTTP download URL to hvdc_analyze_backlog_batch. "
+    "The upload widget is optional UI. The authoritative backlog result comes "
+    "from hvdc_analyze_backlog_batch, and the authoritative machine-readable "
+    "payload is returned in structuredContent. "
     "Always enforce AGI/DAS minimum Flow Code 3 and DOT permits for cargo above 90 tons."
 )
 
@@ -134,6 +214,8 @@ DASHBOARD_LOG_TAIL_LINES = 40
 MCP_APP_RESOURCE_MIME = "text/html;profile=mcp-app"
 BACKLOG_UPLOAD_WIDGET_URI = "ui://widget/hvdc-backlog-upload-v1.html"
 DASHBOARD_SELF_TEST_PATH = "/dashboard/self-test"
+EXCEL_EXPORT_VERSION = "2026-03-17"
+EXCEL_EXPORT_SHEETS = ("Summary", "ZERO", "KPI", "Exceptions")
 
 RUNTIME = {
     "transport": os.getenv("HVDC_MCP_TRANSPORT", "stdio"),
@@ -391,11 +473,13 @@ def _make_text_tool_result(payload: dict) -> CallToolResult:
 
 
 def _make_structured_tool_result(
-    payload: dict[str, Any],
+    payload: dict[str, Any] | BaseModel,
     *,
     summary_key: str = "markdown_summary",
 ) -> CallToolResult:
     """Structured tool output + markdown summary wrapper."""
+    if isinstance(payload, BaseModel):
+        payload = payload.model_dump(mode="json")
     summary_text = payload.get(summary_key) or payload.get("markdown_report")
     if not isinstance(summary_text, str) or not summary_text.strip():
         summary_text = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -412,6 +496,199 @@ def _analysis_snapshot_name(prefix: str = "backlog") -> str:
 
 def _allow_local_analysis_paths() -> bool:
     return RUNTIME.get("transport") == "stdio"
+
+
+def _excel_sheet(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"name": name, "rows": rows}
+
+
+def _rows_from_mapping(
+    mapping: dict[str, Any],
+    *,
+    key_name: str,
+    value_name: str,
+    extra: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    base = extra or {}
+    return [
+        {
+            **base,
+            key_name: key,
+            value_name: value,
+        }
+        for key, value in mapping.items()
+    ]
+
+
+def _build_excel_export_payload(
+    *,
+    kind: str,
+    workbook_name: str | None,
+    sheets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    normalized_sheets = []
+    for default_name in EXCEL_EXPORT_SHEETS:
+        sheet = next((item for item in sheets if item["name"] == default_name), None)
+        normalized_sheets.append(sheet or _excel_sheet(default_name, []))
+    return {
+        "version": EXCEL_EXPORT_VERSION,
+        "kind": kind,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "workbook_name": workbook_name,
+        "sheets": normalized_sheets,
+    }
+
+
+def _shipment_case_excel_export(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized_case = payload["normalized_case"]
+    flow = payload["flow_assessment"]
+    zero = payload["zero_gates"]
+    summary_rows = [
+        {
+            "shipment_id": normalized_case.get("shipment_id"),
+            "destination": normalized_case.get("destination"),
+            "status": normalized_case.get("status"),
+            "mode": normalized_case.get("mode"),
+            "verdict": payload["verdict"]["status"],
+            "observed_flow_code": flow["observed_flow_code"],
+            "recommended_flow_code": flow["recommended_flow_code"],
+            "blocking_actions": ", ".join(zero.get("blocking_actions", [])),
+            "warning_actions": ", ".join(zero.get("warning_actions", [])),
+        }
+    ]
+    zero_rows = [
+        {
+            "gate": gate_name,
+            "status": details.get("status"),
+            "value": details.get("value"),
+            "rule": details.get("rule"),
+            "block_action": details.get("block_action"),
+            "reason": details.get("reason"),
+        }
+        for gate_name, details in payload["zero_gates"]["gate_results"].items()
+    ]
+    kpi_rows = [
+        {
+            "kpi": kpi_name,
+            "status": details.get("status"),
+            "value": details.get("value"),
+            "threshold": details.get("threshold"),
+            "direction": details.get("direction"),
+            "unit": details.get("unit"),
+        }
+        for kpi_name, details in payload["kpi_checks"].items()
+    ]
+    exception_rows = [
+        {"type": "flow_reason", "detail": reason}
+        for reason in flow.get("reasons", [])
+    ] + [
+        {"type": "blocking_action", "detail": item}
+        for item in zero.get("blocking_actions", [])
+    ] + [
+        {"type": "warning_action", "detail": item}
+        for item in zero.get("warning_actions", [])
+    ]
+    return _build_excel_export_payload(
+        kind="hvdc.shipment_case",
+        workbook_name=normalized_case.get("shipment_id"),
+        sheets=[
+            _excel_sheet("Summary", summary_rows),
+            _excel_sheet("ZERO", zero_rows),
+            _excel_sheet("KPI", kpi_rows),
+            _excel_sheet("Exceptions", exception_rows),
+        ],
+    )
+
+
+def _backlog_batch_excel_export(payload: dict[str, Any]) -> dict[str, Any]:
+    summary_rows = _rows_from_mapping(
+        payload["totals"],
+        key_name="metric",
+        value_name="value",
+        extra={"section": "totals"},
+    ) + _rows_from_mapping(
+        payload["by_status"],
+        key_name="metric",
+        value_name="value",
+        extra={"section": "by_status"},
+    )
+    zero_rows = [dict(row) for row in payload.get("zero_candidates", [])]
+    kpi_rows = [
+        {"kind": "breach", "code": row["code"], "count": row["count"]}
+        for row in payload.get("breaches", [])
+    ]
+    exception_rows = [
+        {
+            "kind": "hotspot",
+            "destination": row["destination"],
+            "status": row["status"],
+            "count": row["count"],
+        }
+        for row in payload.get("hotspots", [])
+    ] + _rows_from_mapping(
+        payload["by_site"],
+        key_name="site",
+        value_name="count",
+        extra={"kind": "site_count"},
+    ) + _rows_from_mapping(
+        payload["by_mode"],
+        key_name="mode",
+        value_name="count",
+        extra={"kind": "mode_count"},
+    )
+    return _build_excel_export_payload(
+        kind="hvdc.backlog_batch",
+        workbook_name=payload.get("snapshot_name"),
+        sheets=[
+            _excel_sheet("Summary", summary_rows),
+            _excel_sheet("ZERO", zero_rows),
+            _excel_sheet("KPI", kpi_rows),
+            _excel_sheet("Exceptions", exception_rows),
+        ],
+    )
+
+
+def _snapshot_compare_excel_export(payload: dict[str, Any]) -> dict[str, Any]:
+    summary_rows = _rows_from_mapping(
+        payload["delta_totals"],
+        key_name="metric",
+        value_name="delta",
+        extra={"section": "delta_totals"},
+    )
+    zero_rows = [
+        {"change_type": "new", **row}
+        for row in payload.get("new_zero_candidates", [])
+    ] + [
+        {"change_type": "resolved", **row}
+        for row in payload.get("resolved_zero_candidates", [])
+    ]
+    kpi_rows = _rows_from_mapping(
+        payload["delta_by_status"],
+        key_name="status",
+        value_name="delta",
+        extra={"section": "delta_by_status"},
+    )
+    exception_rows = _rows_from_mapping(
+        payload["delta_by_site"],
+        key_name="site",
+        value_name="delta",
+        extra={"section": "delta_by_site"},
+    ) + _rows_from_mapping(
+        payload["delta_by_mode"],
+        key_name="mode",
+        value_name="delta",
+        extra={"section": "delta_by_mode"},
+    )
+    return _build_excel_export_payload(
+        kind="hvdc.snapshot_compare",
+        workbook_name=f"{payload.get('baseline_snapshot')}-to-{payload.get('candidate_snapshot')}",
+        sheets=[
+            _excel_sheet("Summary", summary_rows),
+            _excel_sheet("ZERO", zero_rows),
+            _excel_sheet("KPI", kpi_rows),
+            _excel_sheet("Exceptions", exception_rows),
+        ],
+    )
 
 
 def _read_widget_template(filename: str) -> str:
@@ -458,6 +735,15 @@ def _internal_base_url() -> str:
     return f"http://{host}:{RUNTIME['port']}"
 
 
+def _normalize_excel_mcp_url(url: str | None) -> dict[str, str | None]:
+    raw = str(url or "").strip().rstrip("/")
+    if not raw:
+        return {"base_url": None, "mcp_url": None}
+    if raw.endswith("/mcp"):
+        return {"base_url": raw[:-4], "mcp_url": raw}
+    return {"base_url": raw, "mcp_url": f"{raw}/mcp"}
+
+
 def _http_json(
     url: str,
     *,
@@ -502,7 +788,11 @@ async def _run_self_test(target: str, include_tool_calls: bool) -> dict[str, Any
     public_base_url = _normalize_public_base_url(RUNTIME.get("public_base_url"))
     local_base_url = _internal_base_url()
     state = _read_json_file_safe(REMOTE_STATE_PATH)
-    connector_url = state.get("mcp_url") or (f"{public_base_url}/mcp" if public_base_url else None)
+    state_public_base_url = _normalize_public_base_url(state.get("public_base_url"))
+    if public_base_url and state_public_base_url and state_public_base_url != public_base_url:
+        connector_url = f"{public_base_url}/mcp"
+    else:
+        connector_url = state.get("mcp_url") or (f"{public_base_url}/mcp" if public_base_url else None)
 
     def add_check(name: str, status: str, detail: str = "") -> None:
         checks.append({"name": name, "status": status, "detail": detail})
@@ -530,10 +820,11 @@ async def _run_self_test(target: str, include_tool_calls: bool) -> dict[str, Any
             root = await fetch_json(f"{base_url}/", expected_statuses={200})
             add_check(f"{label} health", "pass", f"transport={root.get('transport')}")
             dashboard = await fetch_json(f"{base_url}/dashboard/status", expected_statuses={200})
+            dashboard_summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
             add_check(
                 f"{label} dashboard",
                 "pass",
-                f"health_score={dashboard.get('health_score')}",
+                f"health_score={dashboard_summary.get('health_score')}",
             )
         except Exception as exc:
             add_check(f"{label} health", "fail", str(exc))
@@ -788,6 +1079,113 @@ def _build_root_status_payload() -> dict:
         ],
         "chatgpt_upload": chatgpt_upload,
     }
+
+
+async def _build_health_payload(request: Request | None = None) -> dict[str, Any]:
+    root_payload = _build_root_status_payload()
+    state = _read_json_file_safe(REMOTE_STATE_PATH)
+    correlation_id = _request_correlation_id(request)
+    request_host = str(request.headers.get("host", "")).strip() if request is not None else ""
+    public_base_url = _normalize_public_base_url(root_payload.get("public_base_url"))
+    public_host = urlparse(public_base_url).netloc if public_base_url else ""
+
+    docs_ready = bool(DOCS_DIR.exists() and root_payload.get("indexed_docs", 0) > 0)
+    mcp_ready = bool(root_payload.get("mcp_path") and root_payload.get("tools"))
+    if public_host and request_host:
+        public_probe_ok: bool | None = request_host == public_host
+    elif public_base_url:
+        probe_value = state.get("last_health_probe_ok")
+        public_probe_ok = probe_value if isinstance(probe_value, bool) else None
+    else:
+        public_probe_ok = None
+
+    checks = [
+        {"name": "docs", "ok": docs_ready, "detail": f"indexed_docs={root_payload.get('indexed_docs', 0)}"},
+        {"name": "mcp", "ok": mcp_ready, "detail": f"tools={len(root_payload.get('tools', []))}"},
+        {
+            "name": "public_probe",
+            "ok": public_probe_ok,
+            "detail": public_base_url or "not configured",
+        },
+    ]
+    status = "healthy"
+    if not docs_ready or not mcp_ready or public_probe_ok is False:
+        status = "degraded"
+
+    return {
+        **root_payload,
+        "status": status,
+        "checks": checks,
+        "docs_ready": docs_ready,
+        "mcp_ready": mcp_ready,
+        "public_probe_ok": public_probe_ok,
+        "correlation_id": correlation_id,
+    }
+
+
+async def _build_excel_subservice_payload() -> dict[str, Any]:
+    urls = _normalize_excel_mcp_url(os.getenv("HVDC_EXCEL_MCP_URL"))
+    base_url = urls["base_url"]
+    mcp_url = urls["mcp_url"]
+    payload: dict[str, Any] = {
+        "configured": bool(base_url),
+        "status": "not_configured",
+        "base_url": base_url,
+        "mcp_url": mcp_url,
+        "health": {"url": f"{base_url}/health" if base_url else None, "ok": None, "status_code": None, "latency_ms": None, "error": None},
+        "initialize": {"url": mcp_url, "ok": None, "server_name": None, "status_code": None, "error": None},
+        "local_ready": bool(base_url and urlparse(base_url).hostname in {"127.0.0.1", "localhost"}),
+        "export_contract_version": EXCEL_EXPORT_VERSION,
+        "sheet_defaults": list(EXCEL_EXPORT_SHEETS),
+    }
+    if not base_url or not mcp_url:
+        return payload
+
+    payload["health"] = await _probe_http_endpoint(f"{base_url}/health", timeout_sec=3)
+    initialize_body = {
+        "jsonrpc": "2.0",
+        "id": "excel-initialize",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "hvdc-dashboard", "version": "1.0"},
+        },
+    }
+    started_at = time.perf_counter()
+    try:
+        initialize = await asyncio.to_thread(
+            _http_json,
+            mcp_url,
+            method="POST",
+            body=initialize_body,
+            expected_statuses={200},
+            timeout_sec=5,
+        )
+        server_info = ((initialize.get("result") or {}).get("serverInfo") or {})
+        payload["initialize"] = {
+            "url": mcp_url,
+            "ok": True,
+            "server_name": server_info.get("name"),
+            "status_code": initialize.get("status", 200),
+            "latency_ms": int((time.perf_counter() - started_at) * 1000),
+            "error": None,
+        }
+    except Exception as exc:
+        payload["initialize"] = {
+            "url": mcp_url,
+            "ok": False,
+            "server_name": None,
+            "status_code": None,
+            "latency_ms": int((time.perf_counter() - started_at) * 1000),
+            "error": str(exc),
+        }
+
+    if payload["health"].get("ok") and payload["initialize"].get("ok"):
+        payload["status"] = "ready"
+    else:
+        payload["status"] = "degraded"
+    return payload
 
 
 def _connector_freshness_payload(
@@ -1219,6 +1617,7 @@ def _collect_dashboard_alerts(
     root_payload: dict[str, Any],
     processes: dict[str, dict[str, Any]],
     connectivity: dict[str, dict[str, Any]],
+    subservices: dict[str, Any],
 ) -> list[dict[str, str]]:
     alerts: list[dict[str, str]] = []
     managed = runtime["managed"]
@@ -1389,6 +1788,26 @@ def _collect_dashboard_alerts(
                 "code": "local_only",
                 "title": "Public base URL is not configured",
                 "detail": "Dashboard is running in local-only mode without a public HTTPS host.",
+            }
+        )
+
+    excel_mcp = subservices.get("excel_mcp") if isinstance(subservices.get("excel_mcp"), dict) else {}
+    if excel_mcp.get("configured") and excel_mcp.get("health", {}).get("ok") is False:
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "excel_health_failed",
+                "title": "Excel MCP health probe failed",
+                "detail": "Configured Excel MCP /health did not respond successfully.",
+            }
+        )
+    if excel_mcp.get("configured") and excel_mcp.get("initialize", {}).get("ok") is False:
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "excel_initialize_failed",
+                "title": "Excel MCP initialize failed",
+                "detail": "Configured Excel MCP /mcp initialize call failed.",
             }
         )
 
@@ -1612,7 +2031,10 @@ async def _build_dashboard_payload() -> dict:
         runtime["last_health_probe_latency_ms"] = preferred_probe.get("latency_ms")
         runtime["probe_age_seconds"] = 0
 
-    alerts = _collect_dashboard_alerts(state, runtime, root_payload, processes, connectivity)
+    subservices = {
+        "excel_mcp": await _build_excel_subservice_payload(),
+    }
+    alerts = _collect_dashboard_alerts(state, runtime, root_payload, processes, connectivity, subservices)
     summary = _summarize_health(alerts, processes, runtime, connectivity)
 
     snapshot = {
@@ -1650,6 +2072,7 @@ async def _build_dashboard_payload() -> dict:
         "runtime": runtime,
         "server": root_payload,
         "connectivity": connectivity,
+        "subservices": subservices,
         "surfaces": surfaces,
         "processes": processes,
         "alerts": alerts,
@@ -2007,65 +2430,7 @@ async def hvdc_get_domain_summary() -> str:
     Returns:
         str: Markdown 형식 — 프로젝트 개요, 노드 8개, Flow Code v3.5, KPI 7개, 규제 5개, 문서 목록
     """
-    doc_list = []
-    if DOCS_DIR.exists():
-        doc_list = [f.name for f in sorted(DOCS_DIR.rglob("*.md"))]
-
-    summary = f"""# HVDC Project Domain Summary
-## Project
-- **Client**: Samsung C&T x ADNOC x DSV, UAE HVDC Project
-- **Role**: SCM/Logistics (Invoice Audit, Customs, Marine Ops, WH Management)
-- **Scale**: ~400 TEU / 100 BL per month, 6 sites
-
-## Node Network (8 nodes)
-| Node | Type | Key Info |
-|------|------|----------|
-| Zayed Port | Import Port | Bulk/Heavy, customs 47150 |
-| Khalifa Port | Import Port | Container, customs 47150 |
-| Jebel Ali | Import Port | Freezone, customs 1485718 |
-| **MOSB** | **Central Hub** | **20,000sqm, SCT team, ALL cargo passes** |
-| MIR | Onshore Site | 35,006sqm, SPMT, DOT required |
-| SHU | Onshore Site | 10,556sqm, SPMT, DOT required |
-| DAS | Offshore Site | 20h LCT, MOSB mandatory |
-| AGI | Offshore Site | 10h LCT, MOSB mandatory |
-
-## Flow Code v3.5
-| Code | Description |
-|------|-------------|
-| 0 | Pre Arrival |
-| 1 | Port -> Site (direct) |
-| 2 | Port -> WH -> Site |
-| 3 | Port -> MOSB -> Site (AGI/DAS MANDATORY) |
-| 4 | Port -> WH -> MOSB -> Site |
-| 5 | Mixed / Incomplete |
-
-**Algorithm**: FLOW = 0 if PreArrival else clip(wh_count + offshore + 1, 1, 4)
-
-## KPI Gates
-| KPI | Target | Direction |
-|-----|--------|-----------|
-| invoice-ocr | 98% | >= |
-| invoice-audit delta | 2% | <= |
-| cost-guard warn rate | 5% | <= |
-| hs-risk misclass | 0.5% | <= |
-| cert-chk auto-pass | 90% | >= |
-| wh-forecast util | 85% | <= |
-| weather-tie ETA MAPE | 12% | <= |
-
-## Key Regulations
-- **FANR**: 방사선 수입허가 (60일 유효)
-- **MOIAT ECAS/EQM**: 규제제품 인증
-- **DOT**: 중량물 >90톤 육상운송 허가
-- **CICPA**: 항만 출입 게이트패스
-- **ADNOC FRA**: 해상 리프팅 위험성 평가
-
-## Available Domain Docs ({len(doc_list)} files)
-{chr(10).join(f'- {f}' for f in doc_list) if doc_list else '- docs/ 폴더에 .md 파일을 추가하세요'}
-
-## Ontology Standards
-UN/CEFACT, WCO-DM v4.2, DCSA eBL 3.0, ICC Incoterms 2020, HS-2022, BIMCO SUPPLYTIME 2017
-"""
-    return summary
+    return render_domain_summary_markdown(load_domain_rules(), docs=doc_markdown_files())
 
 
 @mcp.tool(
@@ -2581,7 +2946,10 @@ async def hvdc_analyze_shipment_case(params: ShipmentCaseInput) -> CallToolResul
     payload = assess_shipment_case(record)
     payload["input_source"] = source
     payload["markdown_summary"] = render_shipment_case_markdown(payload)
-    return _make_structured_tool_result(payload)
+    payload["excel_export"] = ExcelExportPayload.model_validate(
+        _shipment_case_excel_export(payload)
+    ).model_dump(mode="json")
+    return _make_structured_tool_result(ShipmentCaseResult.model_validate(payload))
 
 
 @mcp.tool(
@@ -2607,6 +2975,7 @@ async def hvdc_analyze_shipment_case(params: ShipmentCaseInput) -> CallToolResul
 )
 async def hvdc_render_backlog_upload_widget(params: BacklogUploadWidgetInput) -> CallToolResult:
     """Render the ChatGPT widget used for file upload and backlog analysis."""
+    # The widget only prepares the temporary upload/download handoff for ChatGPT.
     payload = {
         "title": "HVDC backlog upload widget ready",
         "instructions": [
@@ -2623,7 +2992,7 @@ async def hvdc_render_backlog_upload_widget(params: BacklogUploadWidgetInput) ->
         "tool_name": "hvdc_analyze_backlog_batch",
         "widget_uri": BACKLOG_UPLOAD_WIDGET_URI,
     }
-    return _make_structured_tool_result(payload)
+    return _make_structured_tool_result(BacklogUploadWidgetResult.model_validate(payload))
 
 
 @mcp.tool(
@@ -2647,6 +3016,7 @@ async def hvdc_render_backlog_upload_widget(params: BacklogUploadWidgetInput) ->
 )
 async def hvdc_analyze_backlog_batch(params: BacklogBatchInput) -> CallToolResult:
     """Analyze a backlog batch from CSV/XLSX and persist a named snapshot."""
+    # This tool is the authority for the structured result payload and snapshot persistence.
     records, metadata = load_normalized_records(
         file_param=params.file.model_dump(exclude_none=True) if params.file is not None else None,
         local_path=params.local_path,
@@ -2682,7 +3052,13 @@ async def hvdc_analyze_backlog_batch(params: BacklogBatchInput) -> CallToolResul
         source=metadata.__dict__,
     )
     payload["markdown_report"] = render_backlog_batch_markdown(payload)
-    return _make_structured_tool_result(payload, summary_key="markdown_report")
+    payload["excel_export"] = ExcelExportPayload.model_validate(
+        _backlog_batch_excel_export(payload)
+    ).model_dump(mode="json")
+    return _make_structured_tool_result(
+        BacklogBatchResult.model_validate(payload),
+        summary_key="markdown_report",
+    )
 
 
 @mcp.tool(
@@ -2732,7 +3108,7 @@ async def hvdc_zero_gate_check(params: ZeroGateContextInput) -> CallToolResult:
         },
     }
     payload["markdown_summary"] = render_zero_gate_markdown(payload)
-    return _make_structured_tool_result(payload)
+    return _make_structured_tool_result(ZeroGateCheckResult.model_validate(payload))
 
 
 @mcp.tool(
@@ -2758,7 +3134,13 @@ async def hvdc_compare_snapshots(params: SnapshotCompareInput) -> CallToolResult
         candidate["summary"],
     )
     payload["markdown_report"] = render_compare_snapshots_markdown(payload)
-    return _make_structured_tool_result(payload, summary_key="markdown_report")
+    payload["excel_export"] = ExcelExportPayload.model_validate(
+        _snapshot_compare_excel_export(payload)
+    ).model_dump(mode="json")
+    return _make_structured_tool_result(
+        SnapshotCompareResult.model_validate(payload),
+        summary_key="markdown_report",
+    )
 
 
 @mcp.tool(
@@ -2777,7 +3159,7 @@ async def hvdc_mcp_self_test(params: SelfTestInput) -> CallToolResult:
     """Run MCP connectivity and connector freshness checks."""
     payload = await _run_self_test(params.target, params.include_tool_calls)
     payload["markdown_summary"] = render_self_test_markdown(payload)
-    return _make_structured_tool_result(payload)
+    return _make_structured_tool_result(SelfTestResult.model_validate(payload))
 
 
 # ───────────────────────────────────────────────
@@ -2785,13 +3167,39 @@ async def hvdc_mcp_self_test(params: SelfTestInput) -> CallToolResult:
 # ───────────────────────────────────────────────
 
 @mcp.custom_route("/", methods=["GET"], include_in_schema=False)
-async def root_status(_: Request) -> JSONResponse:
-    return JSONResponse(_build_root_status_payload())
+async def root_status(request: Request) -> JSONResponse:
+    with _correlation_scope(_request_correlation_id(request)) as correlation_id:
+        payload = _build_root_status_payload()
+        payload["correlation_id"] = correlation_id
+        _log_event(
+            logging.INFO,
+            "root status requested",
+            event="root_status",
+            component="http",
+            path="/",
+            method="GET",
+            status_code=200,
+            correlation_id=correlation_id,
+        )
+        return JSONResponse(payload)
 
 
 @mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
 async def healthcheck(request: Request) -> JSONResponse:
-    return await root_status(request)
+    with _correlation_scope(_request_correlation_id(request)) as correlation_id:
+        payload = await _build_health_payload(request)
+        status_code = 200
+        _log_event(
+            logging.INFO,
+            "health requested",
+            event="healthcheck",
+            component="http",
+            path="/health",
+            method="GET",
+            status_code=status_code,
+            correlation_id=correlation_id,
+        )
+        return JSONResponse(payload, status_code=status_code)
 
 
 @mcp.custom_route("/favicon.ico", methods=["GET"], include_in_schema=False)
@@ -2832,24 +3240,50 @@ async def read_doc_http(request: Request) -> PlainTextResponse:
 
 
 @mcp.custom_route("/dashboard/status", methods=["GET"], include_in_schema=False)
-async def dashboard_status(_: Request) -> JSONResponse:
-    return JSONResponse(await _build_dashboard_payload())
+async def dashboard_status(request: Request) -> JSONResponse:
+    with _correlation_scope(_request_correlation_id(request)) as correlation_id:
+        payload = await _build_dashboard_payload()
+        payload["correlation_id"] = correlation_id
+        _log_event(
+            logging.INFO,
+            "dashboard status requested",
+            event="dashboard_status",
+            component="http",
+            path="/dashboard/status",
+            method="GET",
+            status_code=200,
+            correlation_id=correlation_id,
+        )
+        return JSONResponse(payload)
 
 
 @mcp.custom_route(DASHBOARD_SELF_TEST_PATH, methods=["GET"], include_in_schema=False)
 async def dashboard_self_test(request: Request) -> JSONResponse:
-    target = str(request.query_params.get("target", "both")).strip().lower()
-    if target not in {"local", "public", "both"}:
-        target = "both"
-    include_tool_calls = str(request.query_params.get("include_tool_calls", "true")).strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
-    payload = await _run_self_test(target, include_tool_calls)
-    payload["markdown_summary"] = render_self_test_markdown(payload)
-    return JSONResponse(payload)
+    with _correlation_scope(_request_correlation_id(request)) as correlation_id:
+        target = str(request.query_params.get("target", "both")).strip().lower()
+        if target not in {"local", "public", "both"}:
+            target = "both"
+        include_tool_calls = str(request.query_params.get("include_tool_calls", "true")).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        payload = await _run_self_test(target, include_tool_calls)
+        payload["markdown_summary"] = render_self_test_markdown(payload)
+        payload["correlation_id"] = correlation_id
+        _log_event(
+            logging.INFO,
+            "dashboard self test requested",
+            event="dashboard_self_test",
+            component="http",
+            path=DASHBOARD_SELF_TEST_PATH,
+            method="GET",
+            status_code=200,
+            target=target,
+            correlation_id=correlation_id,
+        )
+        return JSONResponse(payload)
 
 
 @mcp.custom_route("/dashboard", methods=["GET"], include_in_schema=False)
@@ -3443,6 +3877,10 @@ async def dashboard(_: Request) -> HTMLResponse:
         <div class="stats" id="chatgptUpload"></div>
       </article>
       <article class="card">
+        <h2>Excel Integration</h2>
+        <div class="stats" id="excelIntegration"></div>
+      </article>
+      <article class="card">
         <h2>Client Surfaces</h2>
         <div class="list" id="surfaces"></div>
       </article>
@@ -3528,6 +3966,7 @@ async def dashboard(_: Request) -> HTMLResponse:
       server: document.getElementById("server"),
       connectivity: document.getElementById("connectivity"),
       chatgptUpload: document.getElementById("chatgptUpload"),
+      excelIntegration: document.getElementById("excelIntegration"),
       surfaces: document.getElementById("surfaces"),
       processes: document.getElementById("processes"),
       alerts: document.getElementById("alerts"),
@@ -3759,8 +4198,10 @@ async def dashboard(_: Request) -> HTMLResponse:
       const deployment = runtime.deployment || {};
       const server = data.server || {};
       const connectivity = data.connectivity || {};
+      const subservices = data.subservices || {};
       const surfaces = data.surfaces || {};
       const chatgptUpload = server.chatgpt_upload || {};
+      const excelIntegration = subservices.excel_mcp || {};
       const processes = data.processes || {};
       const alerts = Array.isArray(data.alerts) ? data.alerts : [];
       const history = data.history || {};
@@ -3776,6 +4217,7 @@ async def dashboard(_: Request) -> HTMLResponse:
         <span class="pill">Transport ${server.transport || "n/a"}</span>
         <span class="pill">Probe ${fmtLatency(runtime.last_health_probe_latency_ms)}</span>
         <span class="pill">Upload ${chatgptUpload.supported ? "widget ready" : "action needed"}</span>
+        <span class="pill">Excel ${excelIntegration.status || "not configured"}</span>
         <span class="pill">Surfaces ${surfaceSummary.ready ?? 0}/${surfaceSummary.total ?? 0} ready</span>
         <span class="pill">Restarts ${history.restart_count ?? 0}</span>
       `;
@@ -3844,6 +4286,19 @@ async def dashboard(_: Request) -> HTMLResponse:
         statRow("Remote URL", Array.isArray(chatgptUpload.remote_download_url_schemes) ? chatgptUpload.remote_download_url_schemes.join(", ") : "n/a"),
         statRow("sandbox:/ read", chatgptUpload.direct_sandbox_paths_supported ? "yes" : "no"),
         statRow("Prompt", chatgptUpload.recommended_prompt || "n/a"),
+      ].join("");
+
+      el.excelIntegration.innerHTML = [
+        statRow("Status", excelIntegration.status || "not configured"),
+        statRow("Configured", excelIntegration.configured ? "yes" : "no"),
+        statRow("Base URL", excelIntegration.base_url || "n/a"),
+        statRow("MCP URL", excelIntegration.mcp_url || "n/a"),
+        statRow("Health", excelIntegration.health?.ok === true ? "pass" : excelIntegration.health?.ok === false ? "fail" : "n/a"),
+        statRow("Initialize", excelIntegration.initialize?.ok === true ? "pass" : excelIntegration.initialize?.ok === false ? "fail" : "n/a"),
+        statRow("Server", excelIntegration.initialize?.server_name || "n/a"),
+        statRow("Local Ready", excelIntegration.local_ready ? "yes" : "no"),
+        statRow("Export Version", excelIntegration.export_contract_version || "n/a"),
+        statRow("Sheets", Array.isArray(excelIntegration.sheet_defaults) ? excelIntegration.sheet_defaults.join(", ") : "n/a"),
       ].join("");
 
       renderList(
@@ -3938,6 +4393,8 @@ async def dashboard(_: Request) -> HTMLResponse:
         linkRow("Health", runtime.health_url),
         linkRow("Docs", runtime.docs_url),
         linkRow("MCP", runtime.mcp_url),
+        linkRow("Excel MCP", excelIntegration.mcp_url),
+        linkRow("Excel Health", excelIntegration.health?.url),
       ].join("");
 
       renderLogs(logs);

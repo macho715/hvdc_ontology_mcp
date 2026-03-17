@@ -33,7 +33,7 @@ The package now includes:
 On the target Windows PC:
 
 1. Copy or unzip this project anywhere.
-2. If you want the full one-shot path, double-click [SETUP_WINDOWS_FULL.cmd](/c:/Users/jichu/Downloads/hvdc-knowledge-gpt-mcp/SETUP_WINDOWS_FULL.cmd)
+2. If you want the full one-shot path, double-click [SETUP_WINDOWS_FULL.cmd](./SETUP_WINDOWS_FULL.cmd)
 3. Wait for dependency install and validation.
 4. Open the repo in Codex or Cursor.
 5. Trust the project.

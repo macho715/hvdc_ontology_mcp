@@ -3,7 +3,9 @@ description: HVDC UAE logistics domain background and MCP usage rules for Cursor
 alwaysApply: true
 ---
 
-- Treat this repository as Samsung C&T x ADNOC x DSV HVDC UAE logistics software.
+<!-- generated from config/domain_rules.yaml; do not edit manually -->
+
+- Treat this repository as Samsung C&T x ADNOC x DSV, UAE HVDC Project logistics software.
 - Domain-critical rules must not be invented when the repo docs or MCP can verify them.
 - Core flow constraints:
   - AGI and DAS are offshore destinations and require MOSB. Minimum Flow Code is 3.
@@ -12,10 +14,10 @@ alwaysApply: true
 - ZERO gate blockers:
   - eBL mismatch
   - BOE field gaps
-  - missing FANR permit
-  - MOSB over capacity
-  - missing DOT permit for cargo above 90 tons
-  - weather alert
+  - FANR permit missing
+  - MOSB capacity exceeded
+  - DOT permit missing
+  - Weather alert
 - When editing or reviewing code related to shipment routing, backlog analysis, KPI checks, regulations, customs, or ZERO logic, use the `hvdc-knowledge` MCP server before changing behavior.
 - Prefer these MCP tools by intent:
   - `hvdc_get_domain_summary` for fast domain refresh

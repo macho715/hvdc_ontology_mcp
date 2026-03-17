@@ -45,6 +45,10 @@ TASK_NAME = "HVDC Knowledge Remote MCP"
 STARTUP_LAUNCHER_NAME = "HVDC Knowledge Remote MCP.cmd"
 TRYCLOUDFLARE_RE = re.compile(r"https://[a-z0-9.-]+\.trycloudflare\.com")
 MAX_RECENT_RESTARTS = 10
+STREAMABLE_HTTP_RE = re.compile(r"--transport\s+streamable-http")
+PORT_ARG_RE = re.compile(r"--port\s+(\d+)")
+PUBLIC_BASE_ARG_RE = re.compile(r"--public-base-url\s+(\S+)")
+HOST_ARG_RE = re.compile(r"--host\s+(\S+)")
 
 
 def info(message: str) -> None:
@@ -103,6 +107,195 @@ def write_state(payload: dict[str, Any]) -> None:
 def clear_state() -> None:
     if STATE_PATH.exists():
         STATE_PATH.unlink()
+
+
+def infer_mode_from_public_base_url(public_base_url: str) -> str:
+    normalized = normalize_public_base_url(public_base_url)
+    if not normalized:
+        return "local"
+    if normalized.endswith(".trycloudflare.com"):
+        return "quick"
+    if normalized.endswith(".ts.net"):
+        return "tailscale-funnel"
+    return "external"
+
+
+def _windows_process_rows() -> list[dict[str, Any]]:
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | "
+            "ConvertTo-Json -Compress"
+        ),
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    payload = json.loads(result.stdout)
+    if isinstance(payload, dict):
+        payload = [payload]
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _posix_process_rows() -> list[dict[str, Any]]:
+    result = subprocess.run(
+        ["ps", "-ax", "-o", "pid=,ppid=,command="],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(maxsplit=2)
+        if len(parts) < 3:
+            continue
+        rows.append(
+            {
+                "ProcessId": int(parts[0]),
+                "ParentProcessId": int(parts[1]),
+                "ExecutablePath": None,
+                "CommandLine": parts[2],
+            }
+        )
+    return rows
+
+
+def _process_rows() -> list[dict[str, Any]]:
+    try:
+        return _windows_process_rows() if os.name == "nt" else _posix_process_rows()
+    except Exception:
+        return []
+
+
+def _candidate_server_processes() -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for row in _process_rows():
+        command_line = str(row.get("CommandLine") or "")
+        if str(SERVER_PATH) not in command_line:
+            continue
+        if not STREAMABLE_HTTP_RE.search(command_line):
+            continue
+        port_match = PORT_ARG_RE.search(command_line)
+        public_match = PUBLIC_BASE_ARG_RE.search(command_line)
+        host_match = HOST_ARG_RE.search(command_line)
+        candidates.append(
+            {
+                "server_pid": int(row.get("ProcessId")),
+                "parent_pid": _coerce_positive_int(row.get("ParentProcessId")),
+                "command_line": command_line,
+                "port": int(port_match.group(1)) if port_match else DEFAULT_PORT,
+                "public_base_url": normalize_public_base_url(public_match.group(1) if public_match else ""),
+                "host": host_match.group(1) if host_match else "127.0.0.1",
+            }
+        )
+    return candidates
+
+
+def _probe_local_only(port: int) -> tuple[bool, dict[str, Any]]:
+    root_url = f"http://127.0.0.1:{port}/"
+    health_url = f"http://127.0.0.1:{port}/health"
+    docs_url = f"http://127.0.0.1:{port}/docs"
+    status_probe = probe_url(root_url, expected_statuses={200}, expect_json=True)
+    health_probe = probe_url(health_url, expected_statuses={200}, expect_json=True)
+    docs_probe = probe_url(docs_url, expected_statuses={200}, expect_json=True)
+    probes = {
+        "local_status": summarize_probe(status_probe),
+        "local_health": summarize_probe(health_probe),
+        "local_docs": summarize_probe(docs_probe),
+    }
+    ok_local = all(probe.get("ok") for probe in (status_probe, health_probe, docs_probe))
+    latencies = [
+        probe.get("latency_ms")
+        for probe in probes.values()
+        if isinstance(probe.get("latency_ms"), int)
+    ]
+    return ok_local, {
+        "health_probe_at": utc_now(),
+        "health_probe_ok": ok_local,
+        "health_probe_latency_ms": max(latencies) if latencies else None,
+        "probes": probes,
+        "server_status": status_probe.get("json", {}),
+        "error": None if ok_local else "local probes failed",
+    }
+
+
+def discover_orphan_state(
+    *,
+    preferred_port: int | None = None,
+    require_healthy: bool,
+) -> tuple[dict[str, Any], dict[str, Any]] | tuple[None, None]:
+    candidates = _candidate_server_processes()
+    if preferred_port is not None:
+        candidates.sort(key=lambda item: (item["port"] != preferred_port, -item["server_pid"]))
+    else:
+        candidates.sort(key=lambda item: -item["server_pid"])
+
+    for candidate in candidates:
+        public_base_url = normalize_public_base_url(candidate.get("public_base_url"))
+        if public_base_url:
+            healthy, details = probe_server(int(candidate["port"]), public_base_url)
+        else:
+            healthy, details = _probe_local_only(int(candidate["port"]))
+        if require_healthy and not healthy:
+            continue
+        state = {
+            "started_at": None,
+            "mode": infer_mode_from_public_base_url(public_base_url),
+            "supervisor_pid": None,
+            "server_pid": candidate["server_pid"],
+            "tunnel_pid": None,
+            "port": candidate["port"],
+            "public_base_url": public_base_url,
+            "mcp_url": f"{public_base_url}/mcp" if public_base_url else None,
+            "health_url": f"{public_base_url}/health" if public_base_url else None,
+            "status_url": f"{public_base_url}/" if public_base_url else None,
+            "docs_url": f"{public_base_url}/docs" if public_base_url else None,
+            "dashboard_url": f"{public_base_url}/dashboard" if public_base_url else None,
+            "cloudflared_path": "",
+            "tailscale_path": "",
+            "restart_count": 0,
+            "recent_restarts": [],
+            "last_health_probe_at": details.get("health_probe_at"),
+            "last_health_probe_ok": details.get("health_probe_ok"),
+            "last_health_probe_latency_ms": details.get("health_probe_latency_ms"),
+            "logs": {
+                "server_stdout": str(SERVER_STDOUT),
+                "server_stderr": str(SERVER_STDERR),
+                "tunnel_stdout": str(TUNNEL_STDOUT),
+                "tunnel_stderr": str(TUNNEL_STDERR),
+                "tunnel_log": str(TUNNEL_LOG),
+                "tailscale_log": str(TAILSCALE_LOG),
+            },
+            "server_status": details.get("server_status", {}),
+            "live_status": details,
+        }
+        return state, details
+    return None, None
+
+
+def reconcile_state(*, preferred_port: int | None = None, require_healthy: bool = True) -> dict[str, Any]:
+    state, details = discover_orphan_state(preferred_port=preferred_port, require_healthy=require_healthy)
+    if not state:
+        return {}
+    write_state(state)
+    if details:
+        ok(f"Recovered managed state from running server PID {state['server_pid']}")
+    return state
 
 
 def _coerce_positive_int(value: Any) -> int | None:
@@ -682,6 +875,8 @@ def stop_children(state: dict[str, Any], verbose: bool) -> None:
 def stop_managed_stack(verbose: bool = True, kill_supervisor: bool = True) -> None:
     state = read_state()
     if not state:
+        state = reconcile_state(require_healthy=False)
+    if not state:
         if verbose:
             warn("No managed remote MCP state found.")
         return
@@ -735,6 +930,14 @@ def start_stack(
     validate_mode(skip_tunnel, public_base_url, tailscale_funnel, cloudflared_override)
 
     existing = read_state()
+    if not existing:
+        existing = reconcile_state(preferred_port=preferred_port, require_healthy=True)
+        if existing:
+            return existing
+        orphan_state, _ = discover_orphan_state(preferred_port=preferred_port, require_healthy=False)
+        if orphan_state:
+            warn(f"Stopping orphaned streamable-http server PID {orphan_state['server_pid']} before restart.")
+            stop_children(orphan_state, verbose=False)
     previous_state = dict(existing) if existing else {}
     restart_count = _coerce_positive_int(previous_state.get("restart_count")) or 0
     recent_restarts = (
@@ -895,7 +1098,11 @@ def stack_healthy(state: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         if normalize_public_base_url(current_url) != normalize_public_base_url(state.get("public_base_url")):
             return False, {"error": "tailscale funnel URL mismatch"}
 
-    healthy, payload = probe_server(int(state["port"]), normalize_public_base_url(state.get("public_base_url")))
+    normalized_public_base_url = normalize_public_base_url(state.get("public_base_url"))
+    if normalized_public_base_url:
+        healthy, payload = probe_server(int(state["port"]), normalized_public_base_url)
+    else:
+        healthy, payload = _probe_local_only(int(state["port"]))
     if not healthy:
         return False, payload
     return True, payload
@@ -903,6 +1110,8 @@ def stack_healthy(state: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
 
 def status_stack(as_json: bool = False) -> int:
     state = read_state()
+    if not state:
+        state = reconcile_state(require_healthy=True)
     if not state:
         if as_json:
             print(json.dumps({"running": False}, ensure_ascii=False))
