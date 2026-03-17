@@ -236,6 +236,22 @@ def _write_if_changed(path: Path, content: str) -> bool:
     return True
 
 
+def _strip_generated_metadata(text: str) -> str:
+    lines = text.splitlines()
+    if GENERATED_NOTICE not in lines:
+        return text
+    start = lines.index(GENERATED_NOTICE)
+    end = None
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("## "):
+            end = index
+            break
+    if end is None:
+        return text
+    normalized = lines[:start] + [GENERATED_NOTICE, ""] + lines[end:]
+    return "\n".join(normalized).strip() + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build canonical Logi ontology master documents")
     parser.add_argument("--check", action="store_true", help="Fail if generated outputs are out of date")
@@ -246,9 +262,9 @@ def main() -> int:
 
     if args.check:
         drift: list[str] = []
-        if not MASTER_PATH.exists() or MASTER_PATH.read_text(encoding="utf-8") != master:
+        if not MASTER_PATH.exists() or _strip_generated_metadata(MASTER_PATH.read_text(encoding="utf-8")) != _strip_generated_metadata(master):
             drift.append(str(MASTER_PATH))
-        if not MERGED_PATH.exists() or MERGED_PATH.read_text(encoding="utf-8") != merged:
+        if not MERGED_PATH.exists() or _strip_generated_metadata(MERGED_PATH.read_text(encoding="utf-8")) != _strip_generated_metadata(merged):
             drift.append(str(MERGED_PATH))
         if drift:
             print("Generated documents are out of date:")
