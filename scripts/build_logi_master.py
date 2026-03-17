@@ -104,6 +104,22 @@ def _measurement_block() -> dict[str, str]:
 
 
 def _generated_at(input_paths: list[Path]) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cI", "--", *[str(path.relative_to(ROOT)) for path in input_paths]],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        stamp = result.stdout.strip()
+        if stamp:
+            return stamp
+    except OSError:
+        pass
+
     latest_mtime = max(path.stat().st_mtime for path in input_paths)
     return datetime.fromtimestamp(latest_mtime, tz=UTC).isoformat()
 

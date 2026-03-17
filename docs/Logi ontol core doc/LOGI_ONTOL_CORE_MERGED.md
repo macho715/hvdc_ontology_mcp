@@ -6,8 +6,8 @@ Merged canonical document bundle generated from curated source documents.
 
 | Field | Value |
 |---|---|
-| generated_at | 2026-03-13T20:15:57.222499+00:00 |
-| source_commit | `da7b1a3` |
+| generated_at | 2026-03-17T23:42:23+04:00 |
+| source_commit | `cc410b6` |
 | file_hash | `470525d8f19eb922c2a7bda66907e7ccd4f2d8c2445b2ac23ce1c3408464361b` |
 | measurement_status | `source-dataset-unavailable` |
 | triple_count | `unavailable` |

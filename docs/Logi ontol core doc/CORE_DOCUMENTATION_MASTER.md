@@ -7,8 +7,8 @@ This file is generated. It reports canonical sources, namespace policy, and buil
 
 | Field | Value |
 |---|---|
-| generated_at | 2026-03-13T20:15:57.224499+00:00 |
-| source_commit | `da7b1a3` |
+| generated_at | 2026-03-17T23:42:23+04:00 |
+| source_commit | `cc410b6` |
 | file_hash | `db14a18ea56f23eb2d0bb16e07edb73d6ab58713259e5a4ff728b192442919a8` |
 | measurement_status | `source-dataset-unavailable` |
 | triple_count | `unavailable` |

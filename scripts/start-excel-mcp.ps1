@@ -2,7 +2,7 @@ param(
     [switch]$InstallDeps,
     [switch]$SmokeTest,
     [int]$Port = 8002,
-    [string]$Host = "127.0.0.1",
+    [string]$ListenHost = "127.0.0.1",
     [string]$RootPath = ""
 )
 
@@ -97,7 +97,7 @@ function Invoke-SmokeTest {
     $oldHost = $env:EXCEL_MCP_HOST
     $oldPort = $env:EXCEL_MCP_PORT
     $env:EXCEL_MCP_ROOT = $workbookRoot
-    $env:EXCEL_MCP_HOST = $Host
+    $env:EXCEL_MCP_HOST = $ListenHost
     $env:EXCEL_MCP_PORT = "$Port"
 
     $proc = Start-Process -FilePath $ExcelPython `
@@ -109,7 +109,7 @@ function Invoke-SmokeTest {
     try {
         Write-Section "Waiting for excel-mcp health"
         $deadline = (Get-Date).AddSeconds(20)
-        $healthUrl = "http://$Host`:$Port/health"
+        $healthUrl = "http://$ListenHost`:$Port/health"
         do {
             try {
                 $health = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 2
@@ -142,7 +142,7 @@ function Invoke-SmokeTest {
             }
         } | ConvertTo-Json -Depth 6
 
-        $response = Invoke-RestMethod -Uri "http://$Host`:$Port/mcp" `
+        $response = Invoke-RestMethod -Uri "http://$ListenHost`:$Port/mcp" `
             -Method Post `
             -ContentType "application/json" `
             -Body $payload `
@@ -180,11 +180,11 @@ if ($SmokeTest) {
 
 Ensure-ExcelVenv
 $env:EXCEL_MCP_ROOT = if ($RootPath) { $RootPath } else { $DefaultWorkbookRoot }
-$env:EXCEL_MCP_HOST = $Host
+$env:EXCEL_MCP_HOST = $ListenHost
 $env:EXCEL_MCP_PORT = "$Port"
 
 Write-Section "Starting excel-mcp"
-Write-Host "Host: $Host"
+Write-Host "Host: $ListenHost"
 Write-Host "Port: $Port"
 Write-Host "Root: $env:EXCEL_MCP_ROOT"
 & $ExcelPython "server.py"
