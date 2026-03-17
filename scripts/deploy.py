@@ -301,9 +301,9 @@ def main():
 
     print(f"\n{BOLD}{'=' * 50}")
     if args.uninstall:
-        print(f"  HVDC Knowledge MCP - Uninstall")
+        print("  HVDC Knowledge MCP - Uninstall")
     else:
-        print(f"  HVDC Knowledge MCP - Auto Deploy")
+        print("  HVDC Knowledge MCP - Auto Deploy")
     print(f"{'=' * 50}{RESET}")
     print(f"  Project: {PROJECT_ROOT}")
     print(f"  OS: {platform.system()} {platform.release()}")
@@ -341,15 +341,15 @@ def main():
 
     # 결과 요약
     print(f"\n{BOLD}{'=' * 50}")
-    print(f"  Deploy Summary")
+    print("  Deploy Summary")
     print(f"{'=' * 50}{RESET}")
     for target, result_ok in results.items():
         status = f"{GREEN}OK{RESET}" if result_ok else f"{YELLOW}SKIPPED{RESET}"
         print(f"  {status}  {target}")
 
     print(f"\n  {BOLD}Usage:{RESET}")
-    print(f"  Claude Code    -> run 'claude' then call hvdc_get_domain_summary")
-    print(f"  Claude Desktop -> restart app, then use MCP tools")
+    print("  Claude Code    -> run 'claude' then call hvdc_get_domain_summary")
+    print("  Claude Desktop -> restart app, then use MCP tools")
     print(f"\n{BOLD}{GREEN}Deploy complete{RESET}\n")
 
 
