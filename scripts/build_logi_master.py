@@ -54,10 +54,13 @@ REFERENCE_DOCS: list[CuratedDoc] = [
 ]
 
 
-def _git_commit() -> str:
+def _git_commit(paths: list[Path] | None = None) -> str:
     try:
+        command = ["git", "log", "-1", "--format=%H"]
+        if paths:
+            command.extend(["--", *[str(path.relative_to(ROOT)) for path in paths]])
         result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+            command,
             cwd=str(ROOT),
             capture_output=True,
             text=True,
@@ -66,7 +69,7 @@ def _git_commit() -> str:
             check=False,
         )
         commit = result.stdout.strip()
-        return commit or "unavailable"
+        return (commit[:7] if commit else "") or "unavailable"
     except OSError:
         return "unavailable"
 
@@ -132,7 +135,7 @@ def _metadata_lines(input_paths: list[Path]) -> list[str]:
         "| Field | Value |",
         "|---|---|",
         f"| generated_at | {_generated_at(input_paths)} |",
-        f"| source_commit | `{_git_commit()}` |",
+        f"| source_commit | `{_git_commit(input_paths)}` |",
         f"| file_hash | `{_file_hash(input_paths)}` |",
         f"| measurement_status | `{measures['measurement_status']}` |",
         f"| triple_count | `{measures['triple_count']}` |",

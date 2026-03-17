@@ -145,6 +145,7 @@ function Invoke-SmokeTest {
         $response = Invoke-RestMethod -Uri "http://$ListenHost`:$Port/mcp" `
             -Method Post `
             -ContentType "application/json" `
+            -Headers @{ Accept = "application/json" } `
             -Body $payload `
             -TimeoutSec 10
 
