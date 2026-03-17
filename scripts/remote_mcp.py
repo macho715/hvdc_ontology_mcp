@@ -1066,7 +1066,6 @@ def install_startup_launcher(args: argparse.Namespace) -> int:
     )
     launcher_path = startup_launcher_path()
     command = build_supervisor_command(args)
-    command_line = subprocess.list2cmdline(command)
 
     def ps_quote(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
